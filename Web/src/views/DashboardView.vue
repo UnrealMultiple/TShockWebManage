@@ -1,0 +1,1184 @@
+<template>
+  <div class="dashboard">
+    <!-- 欢迎横幅 -->
+    <div class="welcome-banner">
+      <div class="welcome-text">
+        <h1>欢迎回来</h1>
+        <p>{{ email }} · TShock 管理平台</p>
+      </div>
+      <div class="server-badge" :class="agentOnline ? 'online' : 'offline'">
+        <span class="dot"></span>
+        {{ agentOnline ? 'TShock 已连接' : 'TShock 未连接' }}
+      </div>
+    </div>
+
+    <!-- 无服务器引导卡片 -->
+    <div v-if="!hasServers" class="onboarding-card">
+      <div class="oc-icon">🚀</div>
+      <div class="oc-body">
+        <h3>尚未绑定任何服务器</h3>
+        <p>将 TShock Agent 插件安装到服务器并启动，将控制台显示的 Agent Key 填入绑定表单，就可开始全功能管理。</p>
+        <router-link to="/servers" class="btn-goto">前往绑定 →</router-link>
+      </div>
+    </div>
+
+    <!-- 是否显示状态卡片 -->
+    <div class="card-grid">
+      <div class="stat-card" v-for="card in statCards" :key="card.label">
+        <div class="stat-icon" :style="{ background: card.bg }">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" v-html="card.icon" />
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ card.value }}</div>
+          <div class="stat-label">{{ card.label }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 服务器控制 -->
+    <div v-if="hasServers" class="ctrl-panel">
+      <div class="ctrl-left">
+        <div class="ctrl-label">服务器控制</div>
+        <div class="ctrl-name">{{ activeServer?.name || '未选择服务器' }}</div>
+        <div :class="['ctrl-badge', agentOnline ? 'badge-on' : 'badge-off']">
+          <span class="ctrl-dot"></span>
+          {{ agentOnline ? '运行中' : '已停止' }}
+        </div>
+      </div>
+      <div class="ctrl-right">
+        <template v-if="agentOnline">
+          <template v-if="!confirmStop">
+            <button
+              class="power-btn btn-stop"
+              :disabled="!canManageActiveServer || stopping"
+              :title="canManageActiveServer ? '' : '需要管理权限'"
+              @click="confirmStop = true"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+                <line x1="12" y1="2" x2="12" y2="12"/>
+              </svg>
+              {{ stopping ? '停止中…' : '停止服务器' }}
+            </button>
+            <button
+              class="power-btn btn-restart"
+              :disabled="!canManageActiveServer || restarting || stopping"
+              :title="canManageActiveServer ? '' : '需要管理权限'"
+              @click="doRestartServer"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              {{ restarting ? '重启中…' : '重启服务器' }}
+            </button>
+            <span v-if="!canManageActiveServer" class="ctrl-hint">需要管理权限</span>
+          </template>
+          <template v-else>
+            <span class="confirm-text">选择停止方式：</span>
+            <button class="power-btn btn-stop-normal" @click="doStopServer('stop')">正常关闭</button>
+            <button class="power-btn btn-stop-nosave" @click="doStopServer('stop_nosave')">不保存关闭</button>
+            <button class="power-btn btn-cancel" @click="confirmStop = false">取消</button>
+          </template>
+        </template>
+        <div v-else class="offline-hint">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <template v-if="isServerOwner && activeServer?.local_start_path">
+            <!-- ✦ 同机启动：路径已由 Agent 自动检测，说明后端与 TShock 在同一台机器 -->
+            <button class="power-btn btn-local-start" :disabled="localStarting" @click="doLocalStart">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              {{ localStarting ? '启动中…' : '启动服务器' }}
+            </button>
+            <span v-if="localStartMsg" class="ctrl-hint" :class="localStartOk ? 'hint-ok' : 'hint-err'">{{ localStartMsg }}</span>
+          </template>
+          <span v-else>服务器已停止，请在主机端手动重启</span>
+        </div>
+      </div>
+    </div>
+    <!-- ── 资源监控 (服主专区) ────────────────────────────────────── -->
+    <template v-if="isServerOwner && agentOnline">
+      <div class="section-title">系统资源</div>
+      <div v-if="serverStats?.resources" class="resource-grid">
+        <div class="resource-card">
+          <div class="rc-top">
+            <span class="rc-label">CPU 占用</span>
+            <span class="rc-value" :style="{ color: cpuColor }">{{ serverStats.resources.cpu_percent?.toFixed(1) }}%</span>
+          </div>
+          <div class="rc-bar-wrap">
+            <div class="rc-bar" :style="{ width: Math.min(100, serverStats.resources.cpu_percent) + '%', background: cpuColor }"></div>
+          </div>
+        </div>
+        <div class="resource-card">
+          <div class="rc-top">
+            <span class="rc-label">内存占用 (进程)</span>
+            <span class="rc-value" style="color:#6366f1">{{ serverStats.resources.mem_mb }} MB</span>
+          </div>
+          <div class="rc-bar-wrap">
+            <div class="rc-bar" :style="{ width: Math.min(100, serverStats.resources.mem_mb / 40.96) + '%', background: '#6366f1' }"></div>
+          </div>
+        </div>
+        <div class="resource-card" v-if="serverStats.resources.net_send_kbps != null">
+          <div class="rc-top">
+            <span class="rc-label">网络流量</span>
+            <span class="rc-value" style="color:#0ea5e9; font-size:15px">
+              ↑{{ serverStats.resources.net_send_kbps?.toFixed(1) }}&nbsp;↓{{ serverStats.resources.net_recv_kbps?.toFixed(1) }} KB/s
+            </span>
+          </div>
+          <div class="rc-bar-wrap">
+            <div class="rc-bar" style="background:#0ea5e9"
+              :style="{ width: Math.min(100, (serverStats.resources.net_send_kbps + serverStats.resources.net_recv_kbps) / 10.24) + '%' }">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-else class="empty-hint">暂无资源数据</div>
+    </template>
+
+    <!-- ── 在线玩家 ──────────────────────────────────────────────── -->
+    <template v-if="agentOnline">
+      <div class="section-title">
+        在线玩家
+        <span v-if="serverStats" class="section-badge">{{ serverStats.online_players }}/{{ serverStats.max_players }}</span>
+      </div>
+      <div v-if="serverStats?.players?.length" class="player-list">
+        <div class="player-card"
+          v-for="p in serverStats.players" :key="p.name"
+          :class="{ 'player-card-sel': selectedPlayer === p.name }"
+          @click="canManageActiveServer && toggleSelectPlayer(p.name)"
+          :style="(canManageActiveServer || canViewOthersInventory) ? 'cursor:pointer' : ''"
+        >
+          <div class="pc-name-row">
+            <div class="pc-name">{{ p.name }}</div>
+            <button v-if="canManageActiveServer" class="pc-more-btn"
+              @click.stop="openPlayerPanel(p)"
+              title="玩家操作">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+            </button>
+            <button v-else-if="canViewOthersInventory" class="pc-more-btn"
+              @click.stop="openInventory(p.name)"
+              title="查看背包">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+          <div class="pc-bars">
+            <div class="pc-bar-row">
+              <span class="pc-bar-icon hp">❤</span>
+              <div class="pc-bar-track">
+                <div class="pc-bar-fill hp" :style="{ width: p.max_hp > 0 ? Math.round(p.hp/p.max_hp*100)+'%' : '0%' }"></div>
+              </div>
+              <span class="pc-bar-txt">{{ p.hp }}/{{ p.max_hp }}</span>
+            </div>
+            <div class="pc-bar-row">
+              <span class="pc-bar-icon mp">✦</span>
+              <div class="pc-bar-track">
+                <div class="pc-bar-fill mp" :style="{ width: p.max_mana > 0 ? Math.round(p.mana/p.max_mana*100)+'%' : '0%' }"></div>
+              </div>
+              <span class="pc-bar-txt">{{ p.mana }}/{{ p.max_mana }}</span>
+            </div>
+          </div>
+          <div class="pc-pos" v-if="canManageActiveServer">({{ p.tile_x }}, {{ p.tile_y }})</div>
+        </div>
+      </div>
+      <div v-else-if="serverStats" class="empty-hint">暂无玩家在线</div>
+
+      <!-- 玩家位置小地图 (仅服主可见) -->
+      <div v-if="canManageActiveServer && agentOnline" class="minimap-wrap">
+        <div class="minimap-header">
+          <span class="minimap-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mm-title-icon">
+              <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/>
+              <line x1="8" y1="2" x2="8" y2="18"/>
+              <line x1="16" y1="6" x2="16" y2="22"/>
+            </svg>
+            玩家小地图
+          </span>
+          <div class="minimap-header-right">
+            <span v-if="loadingDashMap" class="minimap-loading-txt">⏳ 生成中…</span>
+            <template v-else>
+              <div v-if="dashMapImg" class="minimap-zoom-btns">
+                <button class="mz-btn" @click="mapZoom = Math.min(mapZoom * 1.25, 10)" title="放大">＋</button>
+                <span class="mz-label">{{ Math.round(mapZoom * 100) }}%</span>
+                <button class="mz-btn" @click="mapZoom = Math.max(mapZoom / 1.25, 0.5)" title="缩小">－</button>
+                <button class="mz-btn mz-reset" @click="resetMapView" title="复位">⊡</button>
+              </div>
+              <button class="minimap-gen-btn" @click="fetchDashMap" :disabled="!activeServerKey">
+                {{ dashMapImg ? '重新生成' : '生成地图' }}
+              </button>
+            </template>
+          </div>
+        </div>
+        <div class="minimap-body">
+          <div class="minimap-viewport" ref="minimapViewport"
+            @wheel.prevent="onMapWheel"
+            @mousedown.prevent="onMapMouseDown"
+            @mousemove="onMapMouseMove"
+            @mouseup="onMapMouseUp"
+            @mouseleave="onMapMouseUp"
+            @click="onViewportClick"
+            :style="{ cursor: mapDragging ? 'grabbing' : (dashMapImg ? 'grab' : 'default') }">
+            <canvas ref="minimapCanvas" class="minimap-canvas"
+              :style="{ transformOrigin: '0 0', transform: `translate(${mapPanX}px, ${mapPanY}px) scale(${mapZoom})` }">
+            </canvas>
+            <div v-if="!dashMapImg" class="minimap-placeholder">
+              <span>{{ serverStats?.players?.length ? '有玩家在线，点击右上角"生成地图"查看位置' : '点击右上角"生成地图"获取世界地形' }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ── 世界进度 + 排行榜 ─────────────────────────────────────── -->
+    <template v-if="agentOnline">
+      <div class="bottom-grid">
+        <!-- 世界进度 -->
+        <div class="bottom-card">
+          <div class="bc-head">
+            <span class="bc-title">世界通关进度</span>
+            <button class="bc-refresh" @click="fetchWorldProgress" title="刷新">↻</button>
+          </div>
+          <div v-if="worldProgress">
+            <div :class="['world-mode-tag', !worldProgress.is_hardmode && 'normal']">
+              {{ worldProgress.is_hardmode ? '硬模式' : '普通模式' }}
+              · {{ worldProgress.is_crimson ? '猩红' : '腐化' }}
+              {{ worldProgress.is_expert ? ' · 专家' : '' }}{{ worldProgress.is_master ? ' · 大师' : '' }}
+            </div>
+            <div class="boss-list">
+              <div v-for="b in bossList" :key="b.key" class="boss-item" :class="worldProgress[b.key] ? 'done' : ''">
+                <span class="boss-check">{{ worldProgress[b.key] ? '☑' : '☐' }}</span>
+                <span class="boss-name">{{ b.label }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty-hint">
+            <button class="bc-load-btn" @click="fetchWorldProgress">加载进度</button>
+          </div>
+        </div>
+
+        <!-- 排行榜 -->
+        <div class="bottom-card">
+          <div class="bc-head">
+            <span class="bc-title">统计信息</span>
+            <div class="lb-tabs">
+              <button :class="['lb-tab', leaderboardTab==='time' && 'active']" @click="leaderboardTab='time'">在线时长</button>
+              <button :class="['lb-tab', leaderboardTab==='deaths' && 'active']" @click="leaderboardTab='deaths'">死亡次数</button>
+            </div>
+            <button class="bc-refresh" @click="fetchPlayerStats" title="刷新">↻</button>
+          </div>
+          <div v-if="playerStats?.length" class="lb-list">
+            <div v-for="(row, idx) in (leaderboardTab==='time' ? sortedByTime : sortedByDeaths)" :key="row.name" class="lb-row">
+              <span class="lb-rank" :class="idx < 3 ? 'top'+idx : ''">{{ idx+1 }}</span>
+              <span class="lb-name">{{ row.name }}</span>
+              <span class="lb-val">{{ leaderboardTab==='time' ? fmtTime(row.online_seconds) : row.deaths + ' 次' }}</span>
+            </div>
+          </div>
+          <div v-else class="empty-hint">
+            <button class="bc-load-btn" @click="fetchPlayerStats">加载排行</button>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ── 玩家操作面板 ── -->
+    <PlayerActionPanel
+      :show="papVisible"
+      :player-name="papPlayer.name"
+      :email="papPlayer.email"
+      :group="papPlayer.group"
+      :is-online="true"
+      :is-banned="papIsBanned"
+      :ban-ticket="papBanTicket"
+      :hp="papPlayer.hp"
+      :max-hp="papPlayer.maxHp"
+      :mana="papPlayer.mana"
+      :max-mana="papPlayer.maxMana"
+      :agent-online="agentOnline"
+      :ssc-enabled="papSscEnabled"
+      ref="papRef"
+      @close="papVisible = false"
+      @open-inventory="name => { papVisible = false; openInventory(name) }"
+      @action="handlePapAction"
+      @ban-all="handlePapBanAll"
+      @request-groups="handleRequestGroups"
+    />
+    <!-- 背包模态框（Dashboard 全页用） -->
+    <InventoryModal
+      :show="invVisible"
+      :username="invUsername"
+      :loading="invLoading"
+      :error="invError"
+      :slots="invSlots"
+      :health="invHealth"
+      :max-health="invMaxHealth"
+      :mana="invMana"
+      :max-mana="invMaxMana"
+      :is-online="invIsOnline"
+      :can-edit="canManageActiveServer && invSscEnabled"
+      :saving="invSaving"
+      @close="invVisible = false"
+      @save="onSaveInventory"
+    />
+
+  </div>
+</template>
+
+<script setup>
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { getEmail } from '@/api/auth'
+import { updateServer } from '@/api/servers'
+import PlayerActionPanel from '@/components/PlayerActionPanel.vue'
+import InventoryModal from '@/components/InventoryModal.vue'
+import { useInventory } from '@/composables/useInventory'
+
+const myServers             = inject('myServers',             ref([]))
+const activeServer          = inject('activeServer',          ref(null))
+const canManageActiveServer = inject('canManageActiveServer', computed(() => false))
+const hasPerm               = inject('hasPerm',               (() => false))
+const isServerOwner         = inject('isServerOwner',         computed(() => false))
+const activeServerKey       = inject('activeServerKey',       ref(''))
+const hasServers            = computed(() => myServers.value.length > 0)
+const canViewOthersInventory = computed(() => hasPerm('panel.inventory.view.others'))
+
+const props = defineProps({
+  wsState:     { type: String,  default: 'disconnected' },
+  agentOnline: { type: Boolean, default: false },
+})
+
+const email = getEmail() || ''
+
+// ── 服务器控制 ────────────────────────────────────────────────
+const confirmStop  = ref(false)
+const stopping     = ref(false)
+const restarting   = ref(false)
+const localStarting  = ref(false)
+const localStartMsg  = ref('')
+const localStartOk   = ref(false)
+
+function sendWs(data) { window.__tshockSend?.(data) }
+
+function doStopServer(mode) {
+  if (!canManageActiveServer.value || !activeServerKey.value) return
+  stopping.value    = true
+  confirmStop.value = false
+  sendWs({ type: 'server_ctrl', msg_id: Date.now().toString(), timestamp: Date.now(),
+           payload: { agent_key: activeServerKey.value, action: mode } })
+}
+
+function doRestartServer() {
+  if (!canManageActiveServer.value || !activeServerKey.value) return
+  restarting.value = true
+  sendWs({ type: 'server_ctrl', msg_id: Date.now().toString(), timestamp: Date.now(),
+           payload: { agent_key: activeServerKey.value, action: 'restart' } })
+}
+
+function doLocalStart() {
+  if (!activeServerKey.value) return
+  localStarting.value = true
+  localStartMsg.value = ''
+  sendWs({ type: 'local_server_start', msg_id: Date.now().toString(), timestamp: Date.now(),
+           payload: { agent_key: activeServerKey.value } })
+}
+
+// ── 实时状态 ─────────────────────────────────────────────────
+const serverStats    = ref(null)   // 增强 status payload
+const worldProgress  = ref(null)   // boss 通关进度
+const playerStats    = ref(null)   // 死亡/在线时长列表
+const leaderboardTab = ref('time')
+const minimapCanvas   = ref(null)
+const minimapViewport = ref(null)
+const dashMapImg      = ref(null)   // base64 PNG 字符串
+const dashMapEl       = ref(null)   // 已加载的 HTMLImageElement
+const dashMapW        = ref(0)
+const dashMapH        = ref(0)
+const loadingDashMap  = ref(false)
+const mapZoom         = ref(1)
+const mapPanX         = ref(0)
+const mapPanY         = ref(0)
+const mapDragging     = ref(false)
+const selectedPlayer  = ref(null)
+let   pendingDashMapId = null
+let   _dragStartX = 0, _dragStartY = 0, _panStartX = 0, _panStartY = 0
+
+const _colorCache = {}
+function getPlayerColor(name) {
+  if (_colorCache[name]) return _colorCache[name]
+  let hash = 0
+  for (const c of name) hash = ((hash << 5) - hash + c.charCodeAt(0)) | 0
+  _colorCache[name] = `hsl(${Math.abs(hash) % 360}, 80%, 60%)`
+  return _colorCache[name]
+}
+
+const bossList = [
+  { key: 'king_slime',      label: '史莱姆王' },
+  { key: 'eye_of_cthulhu',  label: '克苏鲁之眼' },
+  { key: 'eow_or_boc',      label: '食界虫 / 克苏鲁大脑' },
+  { key: 'skeletron',       label: '骷髅王' },
+  { key: 'queen_bee',       label: '蜂后' },
+  { key: 'deerclops',       label: '驯鹿神' },
+  { key: 'wall_of_flesh',   label: '肉山 (进入硬模式)' },
+  { key: 'queen_slime',     label: '史莱姆皇后' },
+  { key: 'the_destroyer',   label: '毁灭者' },
+  { key: 'the_twins',       label: '双子魔眼' },
+  { key: 'skeletron_prime', label: '机械骷髅王' },
+  { key: 'plantera',        label: '世纪之花' },
+  { key: 'golem',           label: '石巨人' },
+  { key: 'duke_fishron',    label: '猪龙鱼公爵' },
+  { key: 'empress',         label: '光之女皇' },
+  { key: 'ancient_cultist', label: '远古祭祀者' },
+  { key: 'moon_lord',       label: '月球领主' },
+]
+
+const sortedByTime   = computed(() =>
+  [...(playerStats.value || [])].sort((a, b) => b.online_seconds - a.online_seconds).slice(0, 10))
+const sortedByDeaths = computed(() =>
+  [...(playerStats.value || [])].sort((a, b) => b.deaths - a.deaths).slice(0, 10))
+
+const cpuColor = computed(() => {
+  const v = serverStats.value?.resources?.cpu_percent ?? 0
+  if (v >= 80) return '#ef4444'
+  if (v >= 50) return '#f59e0b'
+  return '#22c55e'
+})
+
+function fmtTime(secs) {
+  if (!secs) return '0m'
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+function fetchWorldProgress() {
+  if (!activeServerKey.value) return
+  sendWs({ type: 'world_progress', msg_id: Date.now().toString(), timestamp: Date.now(),
+           payload: { agent_key: activeServerKey.value } })
+}
+
+function fetchPlayerStats() {
+  if (!activeServerKey.value) return
+  sendWs({ type: 'player_stats', msg_id: Date.now().toString(), timestamp: Date.now(),
+           payload: { agent_key: activeServerKey.value } })
+}
+
+function drawMinimap() {
+  const canvas = minimapCanvas.value
+  if (!canvas) return
+  const pList = serverStats.value?.players
+  const world = serverStats.value?.world
+  const ctx = canvas.getContext('2d')
+
+  if (dashMapEl.value) {
+    // 地图图片已加载：以真实地形为底图
+    canvas.width  = dashMapEl.value.naturalWidth
+    canvas.height = dashMapEl.value.naturalHeight
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(dashMapEl.value, 0, 0)
+    if (pList?.length) {
+      for (const p of pList) {
+        // PNG 是 1/4 采样，所以 canvas 像素坐标 = tile / 4
+        const px = p.tile_x / 4
+        const py = p.tile_y / 4
+        const isSel = selectedPlayer.value === p.name
+        const color = getPlayerColor(p.name)
+        ctx.shadowColor = color
+        ctx.shadowBlur  = isSel ? 10 : 4
+        ctx.beginPath()
+        ctx.arc(px, py, isSel ? 6 : 4, 0, Math.PI * 2)
+        ctx.fillStyle = color
+        ctx.fill()
+        ctx.strokeStyle = isSel ? '#fff' : 'rgba(0,0,0,0.7)'
+        ctx.lineWidth   = isSel ? 1.5 : 0.8
+        ctx.stroke()
+        ctx.shadowBlur = 0
+        // 名字标签
+        ctx.font        = isSel ? 'bold 9px sans-serif' : '8px sans-serif'
+        ctx.fillStyle   = '#fff'
+        ctx.shadowColor = '#000'
+        ctx.shadowBlur  = 3
+        ctx.fillText(p.name, px + 7, py + 4)
+        ctx.shadowBlur = 0
+      }
+    }
+    return
+  }
+
+  // 无底图时仅渲染玩家点（白色背景）
+  if (!pList?.length || !world?.width) return
+  if (!canvas.width) { canvas.width = 400; canvas.height = 120 }
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.fillStyle = '#f1f5f9'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  for (const p of pList) {
+    const x = (p.tile_x / world.width)  * canvas.width
+    const y = (p.tile_y / world.height) * canvas.height
+    const isSel = selectedPlayer.value === p.name
+    ctx.beginPath()
+    ctx.arc(x, y, isSel ? 6 : 4, 0, Math.PI * 2)
+    ctx.fillStyle = getPlayerColor(p.name)
+    ctx.fill()
+    ctx.strokeStyle = isSel ? '#1e293b' : 'rgba(0,0,0,0.4)'
+    ctx.lineWidth = 1.2
+    ctx.stroke()
+    ctx.font      = isSel ? 'bold 10px sans-serif' : '10px sans-serif'
+    ctx.fillStyle = '#1e293b'
+    ctx.shadowColor = '#fff'
+    ctx.shadowBlur  = 2
+    ctx.fillText(p.name, x + 7, y + 4)
+    ctx.shadowBlur = 0
+  }
+}
+
+// ── 缓存 ─────────────────────────────────────────────────────
+function saveMapCache(img, w, h) {
+  try {
+    sessionStorage.setItem(`mmap_${activeServerKey.value}`,
+      JSON.stringify({ img, w, h, ts: Date.now() }))
+  } catch (_) {}
+}
+function loadMapCache() {
+  if (!activeServerKey.value) return
+  try {
+    const raw = sessionStorage.getItem(`mmap_${activeServerKey.value}`)
+    if (!raw) return
+    const { img, w, h, ts } = JSON.parse(raw)
+    if (Date.now() - ts > 30 * 60 * 1000) { sessionStorage.removeItem(`mmap_${activeServerKey.value}`); return }
+    dashMapW.value = w; dashMapH.value = h; dashMapImg.value = img
+    const image = new Image()
+    image.onload = () => { dashMapEl.value = image; drawMinimap(); fitMapToViewport() }
+    image.src = `data:image/png;base64,${img}`
+  } catch (_) {}
+}
+
+// ── 地图交互 ─────────────────────────────────────────────────
+async function fitMapToViewport() {
+  await nextTick()
+  const vp = minimapViewport.value
+  const canvas = minimapCanvas.value
+  if (!vp || !canvas || !canvas.width || !canvas.height) return
+  const vpW = vp.clientWidth || vp.offsetWidth
+  const vpH = vp.clientHeight || vp.offsetHeight
+  if (!vpW || !vpH) return
+  const zoom = Math.min(vpW / canvas.width, vpH / canvas.height)
+  mapZoom.value = zoom
+  mapPanX.value = (vpW - canvas.width  * zoom) / 2
+  mapPanY.value = (vpH - canvas.height * zoom) / 2
+}
+function resetMapView() {
+  fitMapToViewport()
+}
+function onMapWheel(e) {
+  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+  const rect = minimapViewport.value.getBoundingClientRect()
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top
+  const newZoom = Math.max(0.1, Math.min(10, mapZoom.value * factor))
+  const scale = newZoom / mapZoom.value
+  mapPanX.value = mx - (mx - mapPanX.value) * scale
+  mapPanY.value = my - (my - mapPanY.value) * scale
+  mapZoom.value = newZoom
+}
+function onMapMouseDown(e) {
+  mapDragging.value = true
+  _dragStartX = e.clientX; _dragStartY = e.clientY
+  _panStartX = mapPanX.value; _panStartY = mapPanY.value
+}
+function onMapMouseMove(e) {
+  if (!mapDragging.value) return
+  mapPanX.value = _panStartX + (e.clientX - _dragStartX)
+  mapPanY.value = _panStartY + (e.clientY - _dragStartY)
+}
+function onMapMouseUp() { mapDragging.value = false }
+function onViewportClick(e) {
+  if (Math.abs(e.clientX - _dragStartX) > 5 || Math.abs(e.clientY - _dragStartY) > 5) return
+  if (!dashMapEl.value) return
+  const rect = minimapViewport.value.getBoundingClientRect()
+  const cx = (e.clientX - rect.left - mapPanX.value) / mapZoom.value
+  const cy = (e.clientY - rect.top  - mapPanY.value) / mapZoom.value
+  const pList = serverStats.value?.players
+  if (!pList?.length) return
+  let nearest = null, minDist = Infinity
+  for (const p of pList) {
+    const dist = Math.hypot(p.tile_x / 4 - cx, p.tile_y / 4 - cy)
+    if (dist < minDist) { minDist = dist; nearest = p.name }
+  }
+  selectedPlayer.value = minDist < 15 / mapZoom.value ? (selectedPlayer.value === nearest ? null : nearest) : null
+  drawMinimap()
+}
+function toggleSelectPlayer(name) {
+  selectedPlayer.value = selectedPlayer.value === name ? null : name
+  drawMinimap()
+}
+
+function fetchDashMap() {
+  if (!activeServerKey.value) return
+  loadingDashMap.value = true
+  dashMapImg.value    = null
+  dashMapEl.value     = null
+  resetMapView()
+  pendingDashMapId = `dash-map-${Date.now()}`
+  window.__tshockSend?.({
+    type: 'get_minimap', msg_id: pendingDashMapId,
+    timestamp: Date.now(), payload: { agent_key: activeServerKey.value }
+  })
+}
+
+// ── 玩家操作面板 ─────────────────────────────────────────────────
+const papVisible    = ref(false)
+const papSscEnabled = ref(false)
+const papPlayer     = ref({ name: '', email: '', group: '', hp: 0, maxHp: 0, mana: 0, maxMana: 0 })
+const papIsBanned   = ref(false)
+const papBanTicket  = ref(0)
+const papRef        = ref(null)
+let   papInvReqId   = null
+let   papBanReqId   = null
+
+function openPlayerPanel(p) {
+  papPlayer.value = { name: p.name, email: '', group: p.group || '', hp: p.hp || 0, maxHp: p.max_hp || 0, mana: p.mana || 0, maxMana: p.max_mana || 0 }
+  papSscEnabled.value = false
+  papIsBanned.value = false
+  papBanTicket.value = 0
+  papVisible.value = true
+  // 拉背包数据获取 ssc_enabled
+  papInvReqId = `pap-${Date.now()}`
+  window.__tshockSend?.({ type: 'get_inventory', msg_id: papInvReqId, timestamp: Date.now(),
+    payload: { agent_key: activeServerKey.value, username: p.name } })
+
+  papBanReqId = `pab-${Date.now()}`
+  window.__tshockSend?.({
+    type: 'player_action', msg_id: papBanReqId, timestamp: Date.now(),
+    payload: { agent_key: activeServerKey.value, action: 'ban_status', player: p.name },
+  })
+}
+
+function handlePapAction(evt) {
+  const reqId = `pa-${Date.now()}`
+  const reason = (evt?.reason || '').trim() || '由管理员操作'
+  const duration = (evt?.duration || '').trim()
+  window.__tshockSend?.({ type: 'player_action', msg_id: reqId, timestamp: Date.now(),
+    payload: { agent_key: activeServerKey.value, ...evt, reason, duration } })
+  const handler = (e) => {
+    const pkt = e.detail || {}
+    if (pkt.type !== 'player_action_resp') return
+    const p = pkt.payload || {}
+    if (p.ref_id !== reqId) return
+    window.removeEventListener('ws-message', handler)
+    papRef.value?.showResult(!!p.success, p.msg || (p.success ? '操作成功' : '操作失败'))
+  }
+  window.addEventListener('ws-message', handler)
+  setTimeout(() => window.removeEventListener('ws-message', handler), 15000)
+}
+
+function handlePapBanAll({ chars, reason, duration }) {
+  const reqId = `pba-${Date.now()}`
+  const banReason = (reason || '').trim() || '由管理员一键封禁'
+  const banDuration = (duration || '').trim()
+  window.__tshockSend?.({ type: 'player_action', msg_id: reqId, timestamp: Date.now(),
+    payload: { agent_key: activeServerKey.value, action: 'ban_all', player: '', chars, reason: banReason, duration: banDuration } })
+  const handler = (e) => {
+    const pkt = e.detail || {}
+    if (pkt.type !== 'player_action_resp') return
+    const p = pkt.payload || {}
+    if (p.ref_id !== reqId) return
+    window.removeEventListener('ws-message', handler)
+    papRef.value?.showResult(!!p.success, p.msg || '操作完成')
+  }
+  window.addEventListener('ws-message', handler)
+  setTimeout(() => window.removeEventListener('ws-message', handler), 15000)
+}
+
+// ── 背包（composable）──────────────────────────────────────────────
+const {
+  invVisible, invUsername, invLoading, invError,
+  invSlots, invHealth, invMaxHealth, invMana, invMaxMana,
+  invIsOnline, invSscEnabled, invSaving,
+  openInventory: _openInv,
+  handleSaveInventory: _handleSaveInv,
+  consumeWsMessage: consumeInvMsg,
+} = useInventory()
+function openInventory(name) { _openInv(name, activeServerKey.value) }
+function onSaveInventory(slotMap) { _handleSaveInv(slotMap, activeServerKey.value) }
+
+function onWsMessage(e) {
+  const pkt = e.detail
+  if (pkt.type === 'server_ctrl_resp') {
+    stopping.value  = false
+    restarting.value = false
+  } else if (pkt.type === 'local_server_start_resp') {
+    localStarting.value = false
+    localStartOk.value  = pkt.payload?.success ?? false
+    localStartMsg.value = pkt.payload?.msg || ''
+    setTimeout(() => { localStartMsg.value = '' }, 5000)
+  } else if (pkt.type === 'status') {
+    const meta = pkt.metadata?.agent_key
+    if (!meta || meta === activeServerKey.value) {
+      serverStats.value = pkt.payload || null
+      drawMinimap()
+    }
+  } else if (pkt.type === 'minimap_resp') {
+    const meta = pkt.metadata?.agent_key
+    if (meta && meta !== activeServerKey.value) return
+    loadingDashMap.value = false
+    if (pkt.payload?.ref_id !== pendingDashMapId) return
+    pendingDashMapId = null
+    if (!pkt.payload?.success) { console.warn('[Dashboard minimap]', pkt.payload?.msg); return }
+    dashMapW.value = pkt.payload.world_width
+    dashMapH.value = pkt.payload.world_height
+    dashMapImg.value = pkt.payload.img
+    saveMapCache(pkt.payload.img, pkt.payload.world_width, pkt.payload.world_height)
+    const img = new Image()
+    img.onload = () => { dashMapEl.value = img; drawMinimap(); fitMapToViewport() }
+    img.src = `data:image/png;base64,${pkt.payload.img}`
+    if (pkt.payload.players) {
+      serverStats.value = {
+        ...(serverStats.value || {}),
+        players: pkt.payload.players,
+        world: { width: pkt.payload.world_width, height: pkt.payload.world_height }
+      }
+    }
+  } else if (pkt.type === 'world_progress_resp') {
+    if (pkt.payload?.success) worldProgress.value = pkt.payload.progress
+  } else if (pkt.type === 'player_stats_resp') {
+    if (pkt.payload?.success) playerStats.value = pkt.payload.stats
+  } else if (pkt.type === 'get_inventory_resp') {
+    const p = pkt.payload || {}
+    // PAP 拉取 ssc 信息
+    if (papInvReqId && p.ref_id === papInvReqId) {
+      papInvReqId = null
+      papSscEnabled.value = !!p.ssc_enabled
+    }
+    // 背包模态框
+    consumeInvMsg(pkt)
+  } else if (pkt.type === 'save_inventory_resp') {
+    consumeInvMsg(pkt)
+  } else if (pkt.type === 'player_action_resp') {
+    const p = pkt.payload || {}
+    if (papBanReqId && p.ref_id === papBanReqId && p.action === 'ban_status') {
+      papBanReqId = null
+      papIsBanned.value = !!p.banned
+      papBanTicket.value = Number(p.ticket || 0)
+    }
+  } else if (pkt.type === 'get_groups_resp') {
+    const p = pkt.payload || {}
+    if (p.success) papRef.value?.setAvailableGroups(p.groups || [])
+  }
+}
+
+watch(() => props.agentOnline, (val) => {
+  if (val && activeServerKey.value) {
+    fetchWorldProgress()
+    fetchPlayerStats()
+  } else if (!val) {
+    serverStats.value    = null
+    worldProgress.value  = null
+    playerStats.value    = null
+    dashMapImg.value     = null
+    dashMapEl.value      = null
+    loadingDashMap.value = false
+    selectedPlayer.value = null
+    resetMapView()
+  }
+})
+
+watch(activeServerKey, () => {
+  serverStats.value   = null
+  worldProgress.value = null
+  playerStats.value   = null
+  confirmStop.value   = false
+  stopping.value      = false
+  restarting.value    = false
+  localStarting.value = false
+  localStartMsg.value = ''
+  localCfgDirty.value = false
+  localCfgMsg.value   = ''
+  dashMapImg.value     = null
+  dashMapEl.value      = null
+  loadingDashMap.value = false
+  pendingDashMapId     = null
+  selectedPlayer.value = null
+  resetMapView()
+  if (props.agentOnline && activeServerKey.value) {
+    fetchWorldProgress()
+    fetchPlayerStats()
+    nextTick(() => loadMapCache())
+  }
+})
+
+onMounted(() => {
+  window.addEventListener('ws-message', onWsMessage)
+  loadMapCache()
+  if (props.agentOnline && activeServerKey.value) {
+    fetchWorldProgress()
+    fetchPlayerStats()
+  }
+})
+onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
+
+const statCards = computed(() => [
+  {
+    label: '在线玩家',
+    value: serverStats.value
+      ? `${serverStats.value.online_players}/${serverStats.value.max_players}`
+      : (props.agentOnline ? '…' : '–'),
+    icon: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    bg: '#f0fdf4',
+  },
+  {
+    label: '世界',
+    value: serverStats.value?.world_name || (props.agentOnline ? '…' : '–'),
+    icon: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+    bg: '#eff6ff',
+  },
+])
+</script>
+
+<style scoped>
+.dashboard {
+  padding: 28px 32px;
+  overflow-y: auto;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+/* ── 引导卡片 ── */
+.onboarding-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  background: linear-gradient(135deg, #fefce8 0%, #fef3c7 100%);
+  border: 1px solid #fde68a;
+  border-radius: 14px;
+  padding: 22px 26px;
+  margin-bottom: 24px;
+}
+.oc-icon { font-size: 2.2rem; flex-shrink: 0; margin-top: 2px; }
+.oc-body h3 { margin: 0 0 6px; font-size: 1rem; font-weight: 700; color: #78350f; }
+.oc-body p  { margin: 0 0 14px; font-size: 0.85rem; color: #92400e; line-height: 1.55; }
+.btn-goto {
+  display: inline-block;
+  padding: 7px 18px;
+  background: #f59e0b;
+  color: #fff;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background .15s;
+}
+.btn-goto:hover { background: #d97706; }
+
+/* ── 欢迎横幅 ── */
+.welcome-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  padding: 24px 28px;
+  margin-bottom: 24px;
+}
+.welcome-text h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.welcome-text p {
+  margin: 0;
+  font-size: 14px;
+  color: #64748b;
+}
+
+.server-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.server-badge.online  { background: #f0fdf4; color: #16a34a; border-color: #bbf7d0; }
+.server-badge.offline { background: #f8fafc; color: #94a3b8; border-color: #e2e8f0; }
+.server-badge .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+}
+.online  .dot { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+.offline .dot { background: #cbd5e1; }
+
+/* ── 状态卡片 ── */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 28px;
+}
+.stat-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.stat-icon {
+  width: 44px; height: 44px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.stat-icon svg { width: 20px; height: 20px; color: #64748b; }
+.stat-value { font-size: 18px; font-weight: 700; color: #0f172a; }
+.stat-label { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+
+/* ── 服务器控制面板 ── */
+.ctrl-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 20px 24px;
+  margin-bottom: 24px;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.ctrl-left  { display: flex; flex-direction: column; gap: 5px; }
+.ctrl-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+.ctrl-label { font-size: 11px; font-weight: 700; color: #94a3b8; letter-spacing: .06em; text-transform: uppercase; }
+.ctrl-name  { font-size: 16px; font-weight: 700; color: #0f172a; }
+
+.ctrl-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px; font-weight: 600;
+  width: fit-content;
+}
+.badge-on  { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+.badge-off { background: #f8fafc; color: #94a3b8; border: 1px solid #e2e8f0; }
+.ctrl-dot  { width: 7px; height: 7px; border-radius: 50%; }
+.badge-on  .ctrl-dot { background: #22c55e; box-shadow: 0 0 5px #22c55e; }
+.badge-off .ctrl-dot { background: #cbd5e1; }
+
+.power-btn {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 20px;
+  border-radius: 8px;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; border: none;
+  transition: all .15s;
+}
+.power-btn svg { width: 15px; height: 15px; }
+
+.btn-stop    { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.btn-stop:hover:not(:disabled) { background: #fee2e2; }
+.btn-stop:disabled { opacity: .45; cursor: not-allowed; }
+
+.btn-stop-normal { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+.btn-stop-normal:hover { background: #dcfce7; }
+.btn-stop-nosave { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+.btn-stop-nosave:hover { background: #ffedd5; }
+.btn-cancel  { background: #f1f5f9; color: #475569; }
+.btn-cancel:hover  { background: #e2e8f0; }
+.btn-local-start { background: #16a34a; color: #fff; border: 1px solid #16a34a; }
+.btn-local-start:hover { background: #15803d; }
+
+.confirm-text { font-size: 13px; font-weight: 600; color: #b45309; }
+.ctrl-hint    { font-size: 12px; color: #94a3b8; }
+.hint-ok      { color: #16a34a; }
+.hint-err     { color: #dc2626; }
+
+.offline-hint {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: #94a3b8;
+}
+.offline-hint svg { width: 16px; height: 16px; color: #cbd5e1; }
+
+/* ── 说明 ── */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 18px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.6;
+}
+.notice-icon { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; color: #3b82f6; }
+
+/* ── section-title badge ── */
+.section-badge {
+  font-size: 12px; font-weight: 600;
+  padding: 2px 8px;
+  background: #e0f2fe; color: #0369a1;
+  border-radius: 20px;
+}
+.section-badge-owner { background: #fef3c7; color: #92400e; }
+
+/* ── 资源监控 ── */
+.resource-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px;
+}
+.resource-card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 20px;
+}
+.rc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.rc-label { font-size: 13px; color: #64748b; font-weight: 500; }
+.rc-value { font-size: 18px; font-weight: 700; }
+.rc-bar-wrap { height: 6px; background: #f1f5f9; border-radius: 99px; overflow: hidden; }
+.rc-bar { height: 100%; border-radius: 99px; transition: width .5s ease; }
+
+/* ── 在线玩家列表 ── */
+.player-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.player-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; }
+.pc-name-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.pc-name { font-size: 14px; font-weight: 700; color: #1e293b; }
+.pc-more-btn {
+  background: none; border: none; cursor: pointer; padding: 3px 5px;
+  border-radius: 5px; color: #94a3b8; display: flex; align-items: center;
+}
+.pc-more-btn:hover { background: #f1f5f9; color: #0f172a; }
+.pc-bars { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.pc-bar-row { display: flex; align-items: center; gap: 6px; }
+.pc-bar-icon { font-size: 11px; width: 14px; flex-shrink: 0; }
+.pc-bar-icon.hp { color: #ef4444; }
+.pc-bar-icon.mp { color: #6366f1; font-size: 9px; }
+.pc-bar-track { flex: 1; height: 5px; background: #f1f5f9; border-radius: 99px; overflow: hidden; }
+.pc-bar-fill { height: 100%; border-radius: 99px; transition: width .5s ease; }
+.pc-bar-fill.hp { background: #ef4444; }
+.pc-bar-fill.mp { background: #6366f1; }
+.pc-bar-txt { font-size: 11px; color: #94a3b8; width: 58px; text-align: right; flex-shrink: 0; }
+.pc-pos { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+
+/* ── 玩家卡片高亮 ── */
+.player-card-sel {
+  border-color: #93c5fd !important;
+  box-shadow: 0 0 0 2px #dbeafe;
+  background: #eff6ff !important;
+}
+
+/* ── 小地图 ── */
+.minimap-wrap {
+  margin: 8px 0 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.06);
+}
+.minimap-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+}
+.mm-title-icon { width: 14px; height: 14px; margin-right: 6px; vertical-align: middle; color: #64748b; }
+.minimap-title { font-size: 13px; font-weight: 600; color: #374151; display: flex; align-items: center; }
+.minimap-header-right { display: flex; align-items: center; gap: 8px; }
+.minimap-gen-btn {
+  font-size: 12px; padding: 4px 14px; background: #3b82f6; border: none;
+  border-radius: 6px; color: #fff; cursor: pointer; transition: background 0.15s; font-weight: 500;
+}
+.minimap-gen-btn:hover:not(:disabled) { background: #2563eb; }
+.minimap-gen-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.minimap-loading-txt { font-size: 12px; color: #6b7280; }
+/* 缩放按钮组 */
+.minimap-zoom-btns { display: flex; align-items: center; gap: 4px; background: #f1f5f9; border-radius: 7px; padding: 2px 4px; border: 1px solid #e2e8f0; }
+.mz-btn {
+  width: 22px; height: 22px; border: none; background: transparent; border-radius: 4px;
+  cursor: pointer; font-size: 14px; line-height: 1; color: #374151; display: flex; align-items: center; justify-content: center;
+  transition: background 0.1s;
+}
+.mz-btn:hover { background: #e2e8f0; }
+.mz-reset { font-size: 11px; }
+.mz-label { font-size: 11px; color: #6b7280; min-width: 32px; text-align: center; }
+/* 主体：地图视口 + 玩家侧边栏 */
+.minimap-body { display: flex; }
+.minimap-viewport {
+  flex: 1; overflow: hidden; position: relative;
+  height: 280px; background: #f1f5f9;
+  user-select: none;
+}
+.minimap-canvas { display: block; image-rendering: pixelated; }
+.minimap-placeholder {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: #94a3b8; padding: 20px; text-align: center;
+}
+
+
+/* ── 进度 + 排行 双列 ── */
+.bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+.bottom-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 20px; }
+.bc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.bc-title { font-size: 13px; font-weight: 700; color: #1e293b; flex: 1; }
+.bc-refresh {
+  font-size: 14px; background: none; border: none; cursor: pointer;
+  color: #94a3b8; padding: 2px 5px; border-radius: 4px;
+}
+.bc-refresh:hover { color: #3b82f6; background: #eff6ff; }
+.bc-load-btn {
+  font-size: 12px; padding: 6px 14px;
+  background: #f8fafc; border: 1px solid #e2e8f0;
+  border-radius: 7px; cursor: pointer; color: #475569; margin-top: 4px;
+}
+.bc-load-btn:hover { background: #eff6ff; border-color: #93c5fd; color: #3b82f6; }
+
+.world-mode-tag {
+  font-size: 12px; font-weight: 600; color: #b45309; background: #fef3c7;
+  border-radius: 6px; padding: 2px 10px; display: inline-block; margin-bottom: 10px;
+}
+.world-mode-tag.normal { color: #166534; background: #dcfce7; }
+.boss-list { display: flex; flex-direction: column; gap: 3px; max-height: 320px; overflow-y: auto; }
+.boss-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; padding: 3px 0; }
+.boss-item.done { color: #1e293b; }
+.boss-check { font-size: 14px; }
+.boss-name  { font-size: 13px; }
+
+.lb-tabs { display: flex; gap: 4px; }
+.lb-tab {
+  font-size: 11px; padding: 3px 8px; border-radius: 5px;
+  border: 1px solid #e2e8f0; background: #f8fafc; color: #475569;
+  cursor: pointer; transition: all .15s;
+}
+.lb-tab.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+.lb-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.lb-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 0; border-bottom: 1px solid #f1f5f9;
+}
+.lb-rank { font-size: 12px; font-weight: 700; color: #94a3b8; width: 20px; text-align: center; flex-shrink: 0; }
+.lb-rank.top0 { color: #f59e0b; }
+.lb-rank.top1 { color: #94a3b8; }
+.lb-rank.top2 { color: #b45309; }
+.lb-name { flex: 1; font-size: 13px; color: #1e293b; }
+.lb-val  { font-size: 12px; color: #475569; font-weight: 600; }
+
+.empty-hint { font-size: 13px; color: #94a3b8; padding: 12px 0; display: flex; align-items: center; gap: 10px; }
+
+/* ── 重启按钮 ── */
+.btn-restart { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+.btn-restart:hover:not(:disabled) { background: #dbeafe; }
+.btn-restart:disabled { opacity: .45; cursor: not-allowed; }
+
+/* 响应式 */
+@media (max-width: 900px) {
+  .card-grid { grid-template-columns: repeat(2, 1fr); }
+  .bottom-grid, .resource-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .card-grid, .player-list { grid-template-columns: 1fr; }
+  .dashboard { padding: 16px; }
+}
+</style>

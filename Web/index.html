@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TShock 管理平台</title>
+    <link id="app-favicon" rel="icon" type="image/x-icon" href="/resources/app.ico" />
+    <script>
+      (() => {
+        const icon = document.getElementById('app-favicon')
+        if (!icon) return
+        const probe = new Image()
+        probe.onerror = () => {
+          icon.setAttribute('type', 'image/svg+xml')
+          icon.setAttribute('href', '/resources/app.svg')
+        }
+        probe.src = icon.getAttribute('href')
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

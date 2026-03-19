@@ -1,0 +1,115 @@
+import { getToken } from '@/api/auth'
+import { apiUrl } from '@/api/base'
+
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${getToken()}`,
+  }
+}
+
+async function request(method, path, body) {
+  const options = { method, headers: authHeaders() }
+  if (body !== undefined) options.body = JSON.stringify(body)
+  const res = await fetch(apiUrl(path), options)
+  let data
+  try {
+    data = await res.json()
+  } catch {
+    throw new Error(`服务器错误 (${res.status})`)
+  }
+  if (!res.ok) throw new Error(data.detail || '请求失败')
+  return data
+}
+
+/** 认领服务器 */
+export function claimServer(agent_key, name, description = '', is_public = false, extra = {}) {
+  return request('POST', '/api/servers/claim', {
+    agent_key, name, description, is_public,
+    game_ip:   extra.game_ip   ?? '',
+    game_port: extra.game_port ?? null,
+    qq_group:  extra.qq_group  ?? '',
+    show_ip:   extra.show_ip   ?? true,
+  })
+}
+
+/** 加入服务器 */
+export function joinServer(server_id) {
+  return request('POST', '/api/servers/join', { server_id })
+}
+
+/** 获取当前用户参与的所有服务器 */
+export function listServers() {
+  return request('GET', '/api/servers')
+}
+
+/** 获取所有公开的服务器 */
+export function listPublicServers() {
+  return request('GET', '/api/servers/public')
+}
+
+/** 获取服务器详情（含成员列表） */
+export function getServer(server_id) {
+  return request('GET', `/api/servers/${server_id}`)
+}
+
+/** 离开服务器 */
+export function leaveServer(server_id) {
+  return request('DELETE', `/api/servers/${server_id}/leave`)
+}
+
+/** 踢出成员（Owner） */
+export function kickMember(server_id, user_id) {
+  return request('DELETE', `/api/servers/${server_id}/members/${user_id}`)
+}
+
+/** 解散服务器（Owner） */
+export function dissolveServer(server_id) {
+  return request('DELETE', `/api/servers/${server_id}`)
+}
+
+/** 更新服务器信息（Owner） */
+export function updateServer(server_id, data) {
+  return request('PATCH', `/api/servers/${server_id}`, data)
+}
+
+/** 玩家删除自己的游戏角色绑定 */
+export function deleteMyCharacter(server_id, character_name) {
+  return request('DELETE', `/api/servers/${server_id}/my-characters/${encodeURIComponent(character_name)}`)
+}
+
+/** 服主/管理员删除指定成员的游戏角色 */
+export function deleteMemberCharacter(server_id, target_user_id, character_name) {
+  return request('DELETE', `/api/servers/${server_id}/members/${target_user_id}/characters/${encodeURIComponent(character_name)}`)
+}
+// ── 面板权限组 ───────────────────────────────────────────────────────────────
+
+/** 列出服务器所有面板权限组 */
+export function listPanelGroups(server_id) {
+  return request('GET', `/api/servers/${server_id}/panel-groups`)
+}
+
+/** 创建面板权限组（Owner） */
+export function createPanelGroup(server_id, { name, description, permissions }) {
+  return request('POST', `/api/servers/${server_id}/panel-groups`, { name, description, permissions })
+}
+
+/** 更新面板权限组（Owner） */
+export function updatePanelGroup(server_id, group_id, { name, description, permissions }) {
+  return request('PUT', `/api/servers/${server_id}/panel-groups/${group_id}`, { name, description, permissions })
+}
+
+/** 删除面板权限组（Owner） */
+export function deletePanelGroup(server_id, group_id) {
+  return request('DELETE', `/api/servers/${server_id}/panel-groups/${group_id}`)
+}
+
+/** 获取成员当前分配的面板权限组 */
+export function getMemberPanelGroup(server_id, user_id) {
+  return request('GET', `/api/servers/${server_id}/members/${user_id}/panel-group`)
+}
+
+/** 分配成员到面板权限组（Owner/web_staff） */
+export function assignMemberPanelGroup(server_id, user_id, group_id) {
+  return request('PUT', `/api/servers/${server_id}/members/${user_id}/panel-group`, { group_id })
+}

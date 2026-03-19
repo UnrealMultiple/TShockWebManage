@@ -1,0 +1,50 @@
+name: Build TShock Agent Plugin
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "Agent/**"
+      - ".github/workflows/build-agent-plugin.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore
+        run: dotnet restore Agent/TerrariaAgent.csproj
+
+      - name: Build Release
+        run: dotnet build Agent/TerrariaAgent.csproj -c Release --no-restore -o artifacts/AgentPlugin/ServerPlugins
+
+      - name: Copy plugin metadata (if exists)
+        shell: pwsh
+        run: |
+          $manifest = "Agent/manifest.json"
+          if (Test-Path $manifest) {
+            Copy-Item $manifest "artifacts/AgentPlugin/" -Force
+          }
+
+      - name: Create zip package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Compress-Archive -Path artifacts/AgentPlugin/* -DestinationPath artifacts/TerrariaAgent-Plugin.zip -Force
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TerrariaAgent-Plugin
+          path: |
+            artifacts/AgentPlugin/**
+            artifacts/TerrariaAgent-Plugin.zip

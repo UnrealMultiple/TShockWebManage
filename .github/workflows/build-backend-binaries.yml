@@ -1,0 +1,77 @@
+name: Build Backend Binaries
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "Server/**"
+      - ".github/workflows/build-backend-binaries.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win-x64
+            binary: terraria-backend.exe
+          - os: ubuntu-latest
+            target: linux-x64
+            binary: terraria-backend
+
+    defaults:
+      run:
+        working-directory: Server
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: Server/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build backend executable
+        run: |
+          python -m PyInstaller \
+            --noconfirm \
+            --clean \
+            --onefile \
+            --name terraria-backend \
+            --distpath artifacts/${{ matrix.target }} \
+            --workpath build/${{ matrix.target }} \
+            --specpath build/${{ matrix.target }} \
+            --collect-all fastapi \
+            --collect-all starlette \
+            --collect-all pydantic \
+            --collect-all uvicorn \
+            run_backend.py
+
+      - name: Attach runtime config and docs
+        run: |
+          cp server_config.json artifacts/${{ matrix.target }}/
+          cp README-无Python部署.md artifacts/${{ matrix.target }}/ || true
+
+      - name: Verify output
+        run: |
+          test -f artifacts/${{ matrix.target }}/${{ matrix.binary }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraria-backend-${{ matrix.target }}
+          path: Server/artifacts/${{ matrix.target }}/
+          if-no-files-found: error
