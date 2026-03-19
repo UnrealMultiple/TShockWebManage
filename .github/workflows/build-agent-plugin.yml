@@ -27,24 +27,19 @@ jobs:
       - name: Build Release
         run: dotnet build Agent/TerrariaAgent.csproj -c Release --no-restore -o artifacts/AgentPlugin/ServerPlugins
 
-      - name: Copy plugin metadata (if exists)
+      - name: Collect plugin dll only
         shell: pwsh
         run: |
-          $manifest = "Agent/manifest.json"
-          if (Test-Path $manifest) {
-            Copy-Item $manifest "artifacts/AgentPlugin/" -Force
+          $dll = "artifacts/AgentPlugin/ServerPlugins/TerrariaAgent.dll"
+          if (!(Test-Path $dll)) {
+            throw "Plugin dll not found: $dll"
           }
+          New-Item -ItemType Directory -Force -Path artifacts/AgentPluginRelease | Out-Null
+          Copy-Item $dll "artifacts/AgentPluginRelease/TerrariaAgent.dll" -Force
 
-      - name: Create zip package
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          Compress-Archive -Path artifacts/AgentPlugin/* -DestinationPath artifacts/TerrariaAgent-Plugin.zip -Force
-
-      - name: Upload build artifacts
+      - name: Upload dll artifact only
         uses: actions/upload-artifact@v4
         with:
-          name: TerrariaAgent-Plugin
-          path: |
-            artifacts/AgentPlugin/**
-            artifacts/TerrariaAgent-Plugin.zip
+          name: TerrariaAgent-Plugin-dll
+          path: artifacts/AgentPluginRelease/TerrariaAgent.dll
+          if-no-files-found: error

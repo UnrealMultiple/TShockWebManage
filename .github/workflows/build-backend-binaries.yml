@@ -10,18 +10,8 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: win-x64
-            binary: terraria-backend.exe
-          - os: ubuntu-latest
-            target: linux-x64
-            binary: terraria-backend
+    name: Build win-x64
+    runs-on: windows-latest
 
     defaults:
       run:
@@ -51,27 +41,22 @@ jobs:
             --clean \
             --onefile \
             --name terraria-backend \
-            --distpath artifacts/${{ matrix.target }} \
-            --workpath build/${{ matrix.target }} \
-            --specpath build/${{ matrix.target }} \
+            --distpath artifacts/win-x64 \
+            --workpath build/win-x64 \
+            --specpath build/win-x64 \
             --collect-all fastapi \
             --collect-all starlette \
             --collect-all pydantic \
             --collect-all uvicorn \
             run_backend.py
 
-      - name: Attach runtime config and docs
-        run: |
-          cp server_config.json artifacts/${{ matrix.target }}/
-          cp README-无Python部署.md artifacts/${{ matrix.target }}/ || true
-
       - name: Verify output
         run: |
-          test -f artifacts/${{ matrix.target }}/${{ matrix.binary }}
+          test -f artifacts/win-x64/terraria-backend.exe
 
-      - name: Upload artifact
+      - name: Upload exe artifact only
         uses: actions/upload-artifact@v4
         with:
-          name: terraria-backend-${{ matrix.target }}
-          path: Server/artifacts/${{ matrix.target }}/
+          name: terraria-backend-win-x64-exe
+          path: Server/artifacts/win-x64/terraria-backend.exe
           if-no-files-found: error
