@@ -54,6 +54,7 @@ npm run build
 4. Deployment branches and tags 里允许分支
 5. Environment secrets 通常不用填（本项目前端构建不需要敏感值）
 6. Environment variables 里新增：
+
 - VITE_API_BASE = 你的后端 HTTPS 地址（示例：https://api.example.com）
 - VITE_WS_BASE = 你的后端 WSS 地址（示例：wss://api.example.com）
 

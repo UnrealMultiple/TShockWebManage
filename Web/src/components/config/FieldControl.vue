@@ -3,7 +3,7 @@
     <!-- 字段信息（左侧） -->
     <div class="fc-info">
       <span class="fc-key">{{ field.key }}</span>
-      <span class="fc-desc">{{ field.description }}</span>
+      <span class="fc-desc">{{ normalizedDescription }}</span>
     </div>
     <!-- 控件（右侧） -->
     <div class="fc-ctrl">
@@ -111,6 +111,19 @@ const props = defineProps({
   modelValue: { required: true },
 })
 const emit = defineEmits(['update:modelValue'])
+
+const normalizedDescription = computed(() => {
+  const raw = String(props.field?.description ?? '').trim()
+  if (!raw) return ''
+
+  // 兼容 schema 中拼接的元信息，仅保留主描述。
+  const main = raw.split(' * **字段类型**:')[0]?.trim() || raw
+  return main
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+})
 
 // ── Number 解析 ────────────────────────────────────────────────────
 function parseNum(v) {

@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using TShockAPI;
+using TShockAPI.Hooks;
 using Terraria;
 using TerrariaApi.Server;
 using TerrariaManagerAgent.Services;
@@ -14,6 +15,8 @@ namespace TerrariaManagerAgent
         private WebSocketService _wsService;
         private CommandHandler _cmdHandler;
         private RuntimeBroadcastService _runtimeService;
+        private string _currentBackendUrl = string.Empty;
+        private string _currentAgentKey = string.Empty;
 
         // 插件生命周期取消令牌（用于快速中断后台循环）
         private readonly CancellationTokenSource _pluginCts = new CancellationTokenSource();
@@ -40,6 +43,8 @@ namespace TerrariaManagerAgent
                 _cmdHandler = new CommandHandler(_wsService);
                 _runtimeService = new RuntimeBroadcastService(_wsService);
                 CommandHandler.SetAuditLevel(config.AuditLevel);
+                _currentBackendUrl = config.BackendUrl ?? string.Empty;
+                _currentAgentKey = config.AgentKey ?? string.Empty;
 
                 // 2. 注册消息接收回调：当 WS 收到消息时，交给 CommandHandler 处理
                 _wsService.OnMessageReceived += _cmdHandler.ProcessRawMessage;
@@ -55,6 +60,7 @@ namespace TerrariaManagerAgent
                 ServerApi.Hooks.ServerChat.Register(this, _runtimeService.OnChat);
                 ServerApi.Hooks.ServerJoin.Register(this, _runtimeService.OnPlayerJoin);
                 ServerApi.Hooks.ServerLeave.Register(this, _runtimeService.OnPlayerLeave);
+                GeneralHooks.ReloadEvent += OnReload;
 
                 // 6. 初始化玩家统计追踪器
                 StatsTracker.Init();
@@ -86,6 +92,7 @@ namespace TerrariaManagerAgent
                         ServerApi.Hooks.ServerJoin.Deregister(this, _runtimeService.OnPlayerJoin);
                         ServerApi.Hooks.ServerLeave.Deregister(this, _runtimeService.OnPlayerLeave);
                     }
+                    GeneralHooks.ReloadEvent -= OnReload;
 
                     // 取消后台循环（Task.Delay 立即中断）
                     _pluginCts.Cancel();
@@ -101,6 +108,37 @@ namespace TerrariaManagerAgent
                 }
             }
             base.Dispose(disposing);
+        }
+
+        private void OnReload(ReloadEventArgs args)
+        {
+            try
+            {
+                var config = AgentConfigService.LoadConfig(TShock.SavePath);
+                CommandHandler.SetAuditLevel(config.AuditLevel);
+
+                var backendChanged = !string.Equals(_currentBackendUrl, config.BackendUrl ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+                var agentKeyChanged = !string.Equals(_currentAgentKey, config.AgentKey ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+                _currentBackendUrl = config.BackendUrl ?? string.Empty;
+                _currentAgentKey = config.AgentKey ?? string.Empty;
+
+                if (backendChanged || agentKeyChanged)
+                {
+                    args.Player?.SendWarningMessage("[Agent] 配置已重读，但 BackendUrl/AgentKey 变更需重启服务器后生效");
+                    TShock.Log.Warn("[Agent] 已重读配置：BackendUrl 或 AgentKey 发生变化，需重启服务器后生效");
+                }
+                else
+                {
+                    args.Player?.SendSuccessMessage("[Agent] 配置已重读并生效（AuditLevel 已更新）");
+                    TShock.Log.Info("[Agent] 已通过 /reload 重读配置并应用 AuditLevel");
+                }
+            }
+            catch (Exception ex)
+            {
+                args.Player?.SendErrorMessage($"[Agent] 重读配置失败: {ex.Message}");
+                TShock.Log.Error($"[Agent] ReloadEvent 处理异常: {ex.Message}");
+            }
         }
     }
 }

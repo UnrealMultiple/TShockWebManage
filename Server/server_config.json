@@ -1,0 +1,14 @@
+{
+    "api": {
+        "host": "127.0.0.1",
+        "port": 7775
+    },
+    "smtp": {
+        "host": "",
+        "port": ,
+        "user": "",
+        "auth_code": "",
+        "from_name": "TShock 管理平台"
+    },
+    "jwt_secret": "please-change-this-to-a-random-secret-string"
+}
