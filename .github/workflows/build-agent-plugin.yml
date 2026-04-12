@@ -8,6 +8,9 @@ on:
       - ".github/workflows/build-agent-plugin.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -43,3 +46,15 @@ jobs:
           name: TerrariaAgent-Plugin-dll
           path: artifacts/AgentPluginRelease/TerrariaAgent.dll
           if-no-files-found: error
+
+      - name: Create or update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: agent-latest
+          name: "TShock Agent Plugin (latest)"
+          body: |
+            Auto-release from master branch.
+            Commit: ${{ github.sha }}
+          prerelease: false
+          make_latest: false
+          files: artifacts/AgentPluginRelease/TerrariaAgent.dll

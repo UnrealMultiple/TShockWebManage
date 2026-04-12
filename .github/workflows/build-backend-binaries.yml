@@ -8,6 +8,9 @@ on:
       - ".github/workflows/build-backend-binaries.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build win-x64
@@ -60,3 +63,14 @@ jobs:
           name: terraria-backend-win-x64-exe
           path: Server/artifacts/win-x64/terraria-backend.exe
           if-no-files-found: error
+
+      - name: Create or update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: backend-latest
+          name: "Backend Binary win-x64 (latest)"
+          body: |
+            Auto-release from master branch.
+            Commit: ${{ github.sha }}
+          prerelease: false
+          files: Server/artifacts/win-x64/terraria-backend.exe
