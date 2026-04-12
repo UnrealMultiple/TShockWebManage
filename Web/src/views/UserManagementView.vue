@@ -387,7 +387,7 @@ async function loadCharMap() {
       headers: { Authorization: `Bearer ${getToken()}` },
     })
     if (res.ok) charMap.value = await res.json()
-  } catch { /* ignore */ }
+  } catch { /* 忽略 */ }
 }
 
 // ── 成员列表 ──────────────────────────────────────────────────────
@@ -466,10 +466,10 @@ async function loadPanelGroups() {
       const data = await res.json()
       panelGroups.value = data.data || []
     }
-  } catch { /* ignore */ }
+  } catch { /* 忽略 */ }
 }
 
-// role → 对应默认权限组 id
+// 角色 → 对应默认权限组 id
 function roleToDefaultGroupId(role) {
   const nameMap = { owner: '服主', web_staff: '管理', member: '成员' }
   const groupName = nameMap[role]
@@ -516,7 +516,7 @@ async function loadMemberPanelGroup() {
         }
       }
     }
-  } catch { /* ignore */ }
+  } catch { /* 忽略 */ }
 }
 
 async function handleKickMember() {

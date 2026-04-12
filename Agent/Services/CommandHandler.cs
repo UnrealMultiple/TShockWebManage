@@ -48,6 +48,7 @@ namespace TerrariaManagerAgent.Services
             "get_inventory",
             "get_minimap",
             "get_player_positions",
+            "list_banlists",
         };
 
         private sealed class AuditWindowState
@@ -76,6 +77,9 @@ namespace TerrariaManagerAgent.Services
             "update_ban_expiration",
             "create_game_group", "update_game_group", "delete_game_group",
             "save_inventory",
+            "add_banlist",
+            "remove_banlist",
+            "update_banlist_groups",
         };
 
         public static void SetAuditLevel(string? level)
@@ -108,6 +112,8 @@ namespace TerrariaManagerAgent.Services
                 if (envelope == null) return;
 
                 AuditPanelOperation(envelope);
+
+                Console.WriteLine($"[Agent DEBUG] 收到消息类型: {envelope.Type}, MsgId: {envelope.MsgId}");
 
                 switch (envelope.Type)
                 {
@@ -161,6 +167,10 @@ namespace TerrariaManagerAgent.Services
                     case "get_player_positions":   await _world.HandlePlayerPositions(envelope);        break;
                     case "get_inventory":          await _player.HandleGetInventory(envelope);          break;
                     case "save_inventory":         await _player.HandleSaveInventory(envelope);         break;
+                    case "list_banlists":         await _player.HandleListBanlists(envelope);          break;
+                    case "add_banlist":           await _player.HandleAddBanlist(envelope);            break;
+                    case "remove_banlist":        await _player.HandleRemoveBanlist(envelope);         break;
+                    case "update_banlist_groups": await _player.HandleUpdateBanlistGroups(envelope);   break;
                     case "get_groups":             await _player.HandleGetGroups(envelope);             break;
                     case "list_game_groups":       await _player.HandleListGameGroups(envelope);        break;
                     case "create_game_group":      await _player.HandleCreateGameGroup(envelope);       break;
@@ -249,6 +259,10 @@ namespace TerrariaManagerAgent.Services
                 var opType = envelope.Type ?? "unknown";
                 if (!ShouldAudit(opType)) return;
                 var detail = DescribeOperation(opType, payload);
+                if (string.Equals(opType, "list_banlists_resp", StringComparison.OrdinalIgnoreCase))
+                {
+                    detail = DescribeReadResult(payload);
+                }
 
                 if (NoisyReadOps.Contains(opType))
                 {
@@ -291,7 +305,7 @@ namespace TerrariaManagerAgent.Services
             var level = _auditLevel;
             if (level == "off") return false;
             if (level == "all") return true;
-            // write 模式仅记录写操作与高风险操作
+            // 写入模式仅记录写操作与高风险操作
             return WriteOps.Contains(opType);
         }
 
@@ -361,6 +375,25 @@ namespace TerrariaManagerAgent.Services
                 default:
                     return opType;
             }
+        }
+
+        private static string DescribeReadResult(JObject payload)
+        {
+            static int CountArray(JToken token)
+            {
+                return token is JArray arr ? arr.Count : 0;
+            }
+
+            var tiles = CountArray(payload["tiles"]);
+            var items = CountArray(payload["items"]);
+            var projectiles = CountArray(payload["projectiles"]);
+            var success = payload["success"]?.Value<bool?>();
+            var msg = payload["msg"]?.ToString();
+
+            if (success == false)
+                return $"读取图格/物品/弹幕封禁列表失败: {msg}";
+
+            return $"读取图格/物品/弹幕封禁列表 tiles={tiles}, items={items}, projectiles={projectiles}";
         }
     }
 }

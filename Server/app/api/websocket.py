@@ -737,6 +737,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                                           "get_minimap", "get_player_positions",
                                           "get_inventory", "save_inventory",
                                           "list_bans", "unban_by_ticket", "update_ban_expiration",
+                                          "list_banlists", "add_banlist", "remove_banlist",
                                           "get_groups", "list_game_groups",
                                           "create_game_group", "update_game_group", "delete_game_group"):
                 payload    = packet.get("payload", {})
@@ -918,6 +919,7 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                                        "minimap_resp", "player_positions_resp",
                                        "get_inventory_resp", "save_inventory_resp",
                                        "list_bans_resp", "unban_by_ticket_resp", "update_ban_expiration_resp",
+                                       "list_banlists_resp", "add_banlist_resp", "remove_banlist_resp",
                                        "change_password_resp", "get_groups_resp", "list_game_groups_resp",
                                        "create_game_group_resp", "update_game_group_resp", "delete_game_group_resp"):
                 await broadcast_agent_to_authorized_webs(agent_key, raw)

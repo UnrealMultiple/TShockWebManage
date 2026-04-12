@@ -34,6 +34,7 @@
         <div class="role-actions">
           <router-link to="/servers" class="role-link">添加或管理服务器</router-link>
           <router-link to="/dashboard" class="role-link ghost">查看连接仪表盘</router-link>
+          <a href="https://github.com/UnrealMultiple/TShockWebManage/releases" class="role-link ghost" target="_blank" rel="noopener">Agent插件下载</a>
         </div>
       </article>
     </section>

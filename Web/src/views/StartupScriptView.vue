@@ -547,7 +547,7 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
 /* 内容区 */
 .ss-content { flex: 1; overflow-y: auto; padding: 24px 28px; box-sizing: border-box; }
 
-/* Badge */
+/* 状态徽章 */
 .ss-badge { font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 20px; }
 .ss-badge.win      { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; font-family: monospace; }
 .ss-badge.linux    { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; font-family: monospace; }
@@ -574,14 +574,14 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
 .ss-error { display: flex; flex-direction: column; gap: 8px; padding: 16px 20px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 10px; color: #9f1239; font-size: 14px; }
 .ss-empty { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 60px 24px; color: #94a3b8; font-size: 14px; text-align: center; }
 
-/* Toast */
+/* 提示条 */
 .ss-toast { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; margin-bottom: 16px; }
 .ss-toast.ok  { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
 .ss-toast.err { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
 .ss-toast-close { background: none; border: none; cursor: pointer; font-size: 14px; color: inherit; opacity: 0.6; padding: 0 0 0 12px; }
 .ss-toast-close:hover { opacity: 1; }
 
-/* Tab */
+/* 标签页 */
 .ss-tabs { display: flex; gap: 2px; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; }
 .ss-tab { padding: 8px 18px; font-size: 13px; font-weight: 600; background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; color: #94a3b8; margin-bottom: -1px; transition: all .15s; }
 .ss-tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
@@ -591,7 +591,7 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
 .ss-body { display: grid; grid-template-columns: 1fr 420px; gap: 20px; align-items: start; }
 .ss-left { display: flex; flex-direction: column; gap: 16px; }
 
-/* Section */
+/* 区块 */
 .ss-section { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px 20px; }
 .ss-section-title { font-size: 11px; font-weight: 700; color: #94a3b8; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 14px; }
 .ss-field { display: flex; flex-direction: column; gap: 5px; flex: 1; }
@@ -601,7 +601,7 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
 .ss-input, .ss-select { width: 100%; padding: 7px 10px; border: 1px solid #e2e8f0; border-radius: 7px; font-size: 13px; color: #0f172a; background: #f8fafc; box-sizing: border-box; }
 .ss-input:focus, .ss-select:focus { outline: none; border-color: #3b82f6; background: #fff; }
 
-/* Radio group */
+/* 单选组 */
 .ss-radio-group { display: flex; flex-direction: column; gap: 8px; }
 .ss-radio { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .ss-radio input { cursor: pointer; }
@@ -609,7 +609,7 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
 .ss-radio small { font-size: 11px; color: #94a3b8; font-family: monospace; margin-left: 4px; }
 .ss-field-col { display: flex; flex-direction: column; }
 
-/* Checkboxes */
+/* 复选框 */
 .ss-checkboxes { display: flex; flex-direction: column; gap: 10px; }
 .ss-check { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
 .ss-check input { margin-top: 3px; flex-shrink: 0; cursor: pointer; }

@@ -71,7 +71,7 @@
                   @click="selectConfig(f)">
                   <div class="plg-cfg-item-name">{{ fileName(f.name) }}</div>
                   <div class="plg-cfg-item-meta">
-                    <span v-if="isLibraryPlugin(f.name)" class="plg-lib-badge">插件库</span>
+                    <span v-if="isLibraryConfigFile(f)" class="plg-lib-badge">插件库</span>
                     <span class="plg-cfg-item-size">{{ formatSize(f.size) }}</span>
                   </div>
                 </div>
@@ -92,7 +92,7 @@
                 <div class="plg-cfg-editor-header">
                   <div class="plg-cfg-editor-title">
                     <span class="plg-cfg-file-name">{{ fileName(selectedConfig.name) }}</span>
-                    <span v-if="isLibraryPlugin(selectedConfig.name)" class="plg-lib-badge">TShockPlugin 插件库</span>
+                    <span v-if="isLibraryConfigFile(selectedConfig)" class="plg-lib-badge">TShockPlugin 插件库</span>
                     <span v-if="cfgModified" class="plg-modified-badge">● 未保存</span>
                   </div>
                   <div class="plg-cfg-editor-actions">
@@ -134,16 +134,28 @@
                     </div>
                     <!-- JSON 模式 -->
                     <textarea v-else
+                      ref="cfgJsonTextarea"
                       class="plg-json-editor"
                       v-model="cfgText"
                       @input="onCfgInput"
                       spellcheck="false"
                       placeholder="{}"
                     ></textarea>
-                    <div v-if="editorMode === 'json' && cfgJsonError" class="plg-json-err">{{ cfgJsonError }}</div>
+                    <div v-if="editorMode === 'json' && cfgJsonError" class="plg-json-err">
+                      <div class="plg-json-err-title">JSON 语法错误</div>
+                      <div v-if="cfgJsonErrorPos" class="plg-json-err-meta">
+                        第 {{ cfgJsonErrorPos.line }} 行，第 {{ cfgJsonErrorPos.col }} 列（position {{ cfgJsonErrorPos.idx }}）
+                        <button class="plg-json-err-jump" @click="jumpToJsonError">定位到错误</button>
+                      </div>
+                      <div v-if="cfgJsonErrorPos" class="plg-json-err-loc">
+                        <div class="plg-json-err-line">{{ getJsonErrorLine(cfgText, cfgJsonErrorPos) }}</div>
+                        <div class="plg-json-err-caret" :style="{ paddingLeft: `${Math.max(0, (cfgJsonErrorPos.col || 1) - 1)}ch` }">^</div>
+                      </div>
+                      <div class="plg-json-err-msg">{{ cfgJsonErrorRaw || cfgJsonError }}</div>
+                    </div>
                   </div>
                   <!-- 文档面板（右侧，库插件或有本地 md） -->
-                  <div v-if="isLibraryPlugin(selectedConfig.name) || selectedConfig.md_path" class="plg-doc-panel">
+                  <div v-if="isLibraryConfigFile(selectedConfig) || selectedConfig.md_path" class="plg-doc-panel">
                     <div class="plg-doc-header">
                       <span class="plg-doc-header-title">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -152,7 +164,7 @@
                         </svg>
                         插件说明
                       </span>
-                      <a v-if="isLibraryPlugin(selectedConfig.name)" :href="pluginDocUrl(selectedConfig.name)" target="_blank" class="plg-doc-link">在 GitHub 查看</a>
+                      <a v-if="isLibraryConfigFile(selectedConfig)" :href="pluginDocUrl(selectedConfig.assembly_name || selectedConfig.name)" target="_blank" class="plg-doc-link">在 GitHub 查看</a>
                     </div>
                     <div v-if="docLoading" class="plg-loading" style="margin:16px">
                       <div class="plg-spinner"></div><span>加载文档中…</span>
@@ -437,10 +449,13 @@ const configSearch   = ref('')
 const selectedConfig = ref(null)
 const cfgLoading     = ref(false)
 const cfgText        = ref('')
+const cfgJsonTextarea = ref(null)
 const cfgModified    = ref(false)
 const cfgSaving      = ref(false)
 const cfgError       = ref('')
 const cfgJsonError   = ref('')
+const cfgJsonErrorRaw = ref('')
+const cfgJsonErrorPos = ref(null)
 const cfgSaveResult  = ref(null)
 const editorMode     = ref('ui')   // 'ui' | 'json'
 const docLoading     = ref(false)
@@ -450,7 +465,7 @@ const docModalTitle  = ref('')
 const docModalLoading = ref(false)
 const docModalContent = ref('')
 
-// Parsed JSON for UI mode (derived from cfgText)
+// 界面模式使用的已解析 JSON（由 cfgText 派生）
 const cfgParsed = computed(() => {
   try { return cfgText.value.trim() ? JSON.parse(cfgText.value) : null } catch { return null }
 })
@@ -464,7 +479,7 @@ const installingIdx  = ref(null)
 const installResult  = ref(null)
 const apmInstalling  = ref(false)
 const apmResult      = ref(null)
-const apmInstalled   = ref(null)   // null=检测中, false=未安装, true=已安装
+const apmInstalled   = ref(null)   // null=检测中，false=未安装，true=已安装
 
 // ── 已安装 Tab 状态 ──────────────────────────────────────────────────────
 const localPlugins    = ref([])
@@ -474,7 +489,7 @@ const uninstallingIdx = ref(null)
 const localResult     = ref(null)
 const updateCheckLoading = ref(false)
 const updateCheckResult  = ref(null)   // {ok, msg, updates: [{assembly_name, name, local_version, cloud_version}]}
-const updatingIdx        = ref(null)   // assembly_name being updated, or '__all__'
+const updatingIdx        = ref(null)   // 正在更新的程序集名，或 '__all__'
 const enablingIdx        = ref(null)
 const disablingIdx       = ref(null)
 const blacklistingIdx    = ref(null)
@@ -492,6 +507,15 @@ const filteredLocalPlugins = computed(() => {
 const installedAsmSet = computed(() => {
   const s = new Set()
   for (const p of localPlugins.value) s.add(p.assembly_name.toLowerCase())
+  return s
+})
+
+const cloudAsmSet = computed(() => {
+  const s = new Set()
+  for (const p of cloudPlugins.value) {
+    const asm = (p?.AssemblyName || p?.assembly_name || '').toString().trim().toLowerCase()
+    if (asm) s.add(asm)
+  }
   return s
 })
 
@@ -527,6 +551,23 @@ function isLibraryPlugin(name) {
   return LIBRARY_NAMES.has(base) || LIBRARY_NAMES.has(stripLangSuffix(base))
 }
 
+function isLibraryConfigFile(file) {
+  if (!file) return false
+  if (file.is_plugin_library) return true
+
+  const asm = (file.assembly_name || '').toString()
+  if (asm && (isLibraryPlugin(asm) || cloudAsmSet.value.has(asm.toLowerCase()))) return true
+
+  const name = (file.name || '').toString()
+  if (!name) return false
+
+  const base = name.replace(/\.json$/i, '')
+  const stripped = stripLangSuffix(base)
+  if (cloudAsmSet.value.has(base.toLowerCase()) || cloudAsmSet.value.has(stripped.toLowerCase())) return true
+
+  return isLibraryPlugin(name)
+}
+
 function pluginDocUrl(name) {
   const base = stripLangSuffix(name.replace(/\.json$/i, ''))
   return `https://github.com/UnrealMultiple/TShockPlugin/blob/master/src/${base}/README.md`
@@ -552,6 +593,9 @@ const filteredCloudPlugins = computed(() => {
 // ── 初始加载 ──────────────────────────────────────────────────────────
 function loadPage() {
   loadConfigs()
+  if (cloudPlugins.value.length === 0 && !cloudLoading.value) {
+    loadCloudList()
+  }
 }
 
 function doReload() {
@@ -727,8 +771,8 @@ function selectConfig(f) {
   reloadCfg()
   if (f.md_path) {
     loadLocalDoc(f.md_path)
-  } else if (isLibraryPlugin(f.name)) {
-    loadDoc(f.name)
+  } else if (isLibraryConfigFile(f)) {
+    loadDoc(f.assembly_name || f.name)
   }
 }
 
@@ -748,7 +792,8 @@ function saveCfg() {
   if (!cfgModified.value || !selectedConfig.value) return
   // 验证 JSON
   try { JSON.parse(cfgText.value) } catch (e) {
-    cfgJsonError.value = `JSON 格式错误: ${e.message}`
+    setJsonErrorState(cfgText.value, e)
+    jumpToJsonError()
     return
   }
   cfgSaving.value = true
@@ -765,9 +810,61 @@ function onCfgInput() {
   try {
     JSON.parse(cfgText.value)
     cfgJsonError.value = ''
+    cfgJsonErrorRaw.value = ''
+    cfgJsonErrorPos.value = null
   } catch (e) {
-    cfgJsonError.value = `JSON 格式错误: ${e.message}`
+    setJsonErrorState(cfgText.value, e)
   }
+}
+
+function setJsonErrorState(text, err) {
+  const pos = parseJsonErrorPos(text, err)
+  const raw = String(err?.message || '未知错误')
+  cfgJsonErrorPos.value = pos
+  cfgJsonErrorRaw.value = raw
+  cfgJsonError.value = formatJsonError(text, err)
+}
+
+function parseJsonErrorPos(text, err) {
+  const msg = String(err?.message || '')
+  const m = msg.match(/position\s+(\d+)/i)
+  if (!m) return null
+
+  const idx = Number(m[1])
+  if (!Number.isFinite(idx) || idx < 0) return null
+
+  const safeIdx = Math.min(idx, text.length)
+  const head = text.slice(0, safeIdx)
+  const lines = head.split('\n')
+  const line = lines.length
+  const col = lines[lines.length - 1].length + 1
+  return { idx: safeIdx, line, col }
+}
+
+function formatJsonError(text, err) {
+  const raw = String(err?.message || '未知错误')
+  const pos = parseJsonErrorPos(text, err)
+  if (!pos) return `JSON 格式错误: ${raw}`
+  return `第 ${pos.line} 行，第 ${pos.col} 列（position ${pos.idx}）`
+}
+
+function focusJsonError(pos) {
+  if (!pos || !cfgJsonTextarea.value) return
+  const ta = cfgJsonTextarea.value
+  ta.focus()
+  ta.setSelectionRange(pos.idx, pos.idx)
+}
+
+function jumpToJsonError() {
+  if (!cfgJsonErrorPos.value) return
+  focusJsonError(cfgJsonErrorPos.value)
+}
+
+function getJsonErrorLine(text, pos) {
+  if (!pos || !text) return ''
+  const lineIdx = Math.max(0, (pos.line || 1) - 1)
+  const lines = String(text).split('\n')
+  return lines[lineIdx] ?? ''
 }
 
 function onUiChange(newObj) {
@@ -834,7 +931,7 @@ async function openPluginDoc(primaryName, fallbackName = '') {
         docModalContent.value = text
         break
       } catch {
-        // continue to next candidate
+        // 继续尝试下一个候选地址
       }
     }
   } finally {
@@ -958,6 +1055,8 @@ function onWsMessage(e) {
       cfgModified.value = false
       cfgError.value = ''
       cfgJsonError.value = ''
+      cfgJsonErrorRaw.value = ''
+      cfgJsonErrorPos.value = null
     } else {
       cfgError.value = p.msg || '读取失败'
     }
@@ -1415,9 +1514,60 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   background: #fafafa; color: #1e293b;
 }
 .plg-json-err {
-  padding: 8px 14px; font-size: 12px; color: #dc2626;
-  background: #fef2f2; border-top: 1px solid #fee2e2;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #b91c1c;
+  background: #fef2f2;
+  border-top: 1px solid #fecaca;
+  white-space: pre-wrap;
   flex-shrink: 0;
+}
+.plg-json-err-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.plg-json-err-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: #991b1b;
+}
+.plg-json-err-msg {
+  color: #7f1d1d;
+}
+.plg-json-err-loc {
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  background: #fff;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  overflow-x: auto;
+}
+.plg-json-err-line {
+  color: #111827;
+  white-space: pre;
+}
+.plg-json-err-caret {
+  color: #dc2626;
+  font-weight: 700;
+  line-height: 1;
+  white-space: pre;
+}
+.plg-json-err-jump {
+  border: 1px solid #f87171;
+  background: #fff;
+  color: #b91c1c;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.plg-json-err-jump:hover {
+  background: #fee2e2;
 }
 
 /* ── 安装 Tab ── */

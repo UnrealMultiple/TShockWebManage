@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net.NetworkInformation;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using TShockAPI;
 using Terraria;
 using TerrariaApi.Server;
@@ -17,6 +18,7 @@ namespace TerrariaManagerAgent.Services
     {
         private readonly WebSocketService _wsService;
         private readonly bool[] _wasDead = new bool[256];
+        private readonly ConcurrentDictionary<int, string> _slotNames = new ConcurrentDictionary<int, string>();
 
         private Process? _thisProcess;
         private TimeSpan _lastCpuTime = TimeSpan.Zero;
@@ -54,15 +56,24 @@ namespace TerrariaManagerAgent.Services
             if (args == null) return;
             var player = TShock.Players?[args.Who];
             if (player != null && !string.IsNullOrEmpty(player.Name))
+            {
+                _slotNames[args.Who] = player.Name;
                 StatsTracker.OnJoin(player.Name);
+            }
         }
 
         public void OnPlayerLeave(LeaveEventArgs args)
         {
             if (args == null) return;
             var player = TShock.Players?[args.Who];
-            if (player != null && !string.IsNullOrEmpty(player.Name))
-                StatsTracker.OnLeave(player.Name);
+            var name = player?.Name;
+            if (string.IsNullOrWhiteSpace(name))
+                _slotNames.TryGetValue(args.Who, out name);
+
+            if (!string.IsNullOrWhiteSpace(name))
+                StatsTracker.OnLeave(name);
+
+            _slotNames.TryRemove(args.Who, out _);
         }
 
         public async Task DeathDetectionLoop(CancellationToken token)
@@ -151,8 +162,11 @@ namespace TerrariaManagerAgent.Services
                     _lastNetRecv = totalRecv;
                     _lastNetMeasure = now;
 
-                    var players = TShock.Players
+                    var onlinePlayers = TShock.Players
                         ?.Where(p => p != null && p.Active && !string.IsNullOrEmpty(p.Name))
+                        .ToArray() ?? Array.Empty<TSPlayer>();
+
+                    var players = onlinePlayers
                         .Select(p => new
                         {
                             name = p.Name,
@@ -162,7 +176,10 @@ namespace TerrariaManagerAgent.Services
                             max_mana = p.TPlayer?.statManaMax2 ?? 0,
                             tile_x = p.TileX,
                             tile_y = p.TileY,
-                        }).ToArray() ?? Array.Empty<object>();
+                        }).ToArray();
+
+                    // 兜底同步在线会话，避免插件重载后漏记在线时长
+                    StatsTracker.SyncOnlinePlayers(onlinePlayers.Select(p => p.Name));
 
                     await _wsService.SendAsync(new
                     {

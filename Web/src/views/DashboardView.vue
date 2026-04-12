@@ -239,18 +239,23 @@
         <!-- 世界进度 -->
         <div class="bottom-card">
           <div class="bc-head">
-            <span class="bc-title">世界通关进度</span>
+            <span class="bc-title">世界当前进度</span>
             <button class="bc-refresh" @click="fetchWorldProgress" title="刷新">↻</button>
           </div>
           <div v-if="worldProgress">
             <div :class="['world-mode-tag', !worldProgress.is_hardmode && 'normal']">
-              {{ worldProgress.is_hardmode ? '硬模式' : '普通模式' }}
+              {{ worldProgress.is_hardmode ? '肉后' : '肉前' }}
               · {{ worldProgress.is_crimson ? '猩红' : '腐化' }}
-              {{ worldProgress.is_expert ? ' · 专家' : '' }}{{ worldProgress.is_master ? ' · 大师' : '' }}
+              · {{ worldDifficultyLabel }}
+            </div>
+            <div v-if="Number.isFinite(worldProgress.progress_percent)" class="world-progress-summary">
+              当前进度：{{ worldProgress.progress_done }}/{{ worldProgress.progress_total }}
+              （{{ worldProgress.progress_percent }}%）
             </div>
             <div class="boss-list">
-              <div v-for="b in bossList" :key="b.key" class="boss-item" :class="worldProgress[b.key] ? 'done' : ''">
-                <span class="boss-check">{{ worldProgress[b.key] ? '☑' : '☐' }}</span>
+              <div v-for="b in bossProgressList" :key="b.key" class="boss-item" :class="b.done ? 'done' : ''">
+                <img class="boss-icon" :src="bossIconUrl(b)" :alt="b.label" loading="lazy" @error="onBossIconError" />
+                <span class="boss-check">{{ b.done ? '☑' : '☐' }}</span>
                 <span class="boss-name">{{ b.label }}</span>
               </div>
             </div>
@@ -386,12 +391,13 @@ function doLocalStart() {
 
 // ── 实时状态 ─────────────────────────────────────────────────
 const serverStats    = ref(null)   // 增强 status payload
-const worldProgress  = ref(null)   // boss 通关进度
+const worldProgress  = ref(null)   // 首领通关进度
 const playerStats    = ref(null)   // 死亡/在线时长列表
 const leaderboardTab = ref('time')
+let   playerStatsTimer = null
 const minimapCanvas   = ref(null)
 const minimapViewport = ref(null)
-const dashMapImg      = ref(null)   // base64 PNG 字符串
+const dashMapImg      = ref(null)   // Base64 编码的 PNG 字符串
 const dashMapEl       = ref(null)   // 已加载的 HTMLImageElement
 const dashMapW        = ref(0)
 const dashMapH        = ref(0)
@@ -413,25 +419,201 @@ function getPlayerColor(name) {
   return _colorCache[name]
 }
 
-const bossList = [
-  { key: 'king_slime',      label: '史莱姆王' },
-  { key: 'eye_of_cthulhu',  label: '克苏鲁之眼' },
-  { key: 'eow_or_boc',      label: '食界虫 / 克苏鲁大脑' },
-  { key: 'skeletron',       label: '骷髅王' },
-  { key: 'queen_bee',       label: '蜂后' },
-  { key: 'deerclops',       label: '驯鹿神' },
-  { key: 'wall_of_flesh',   label: '肉山 (进入硬模式)' },
-  { key: 'queen_slime',     label: '史莱姆皇后' },
-  { key: 'the_destroyer',   label: '毁灭者' },
-  { key: 'the_twins',       label: '双子魔眼' },
-  { key: 'skeletron_prime', label: '机械骷髅王' },
-  { key: 'plantera',        label: '世纪之花' },
-  { key: 'golem',           label: '石巨人' },
-  { key: 'duke_fishron',    label: '猪龙鱼公爵' },
-  { key: 'empress',         label: '光之女皇' },
-  { key: 'ancient_cultist', label: '远古祭祀者' },
-  { key: 'moon_lord',       label: '月球领主' },
-]
+function resolveDd2Display(t1, t2, t3) {
+  // 事件显示阶段规则：
+  // 未完成 -> 显示 T1；完成 T1 -> 显示 T2；完成 T2 -> 显示 T3；
+  // 只要 T3 为 true 就视为通关（兼容偶发跳过 T2 标记的情况）。
+  if (t3) {
+    return { label: '撒旦军队（T3）', icon: '双足翼龙', done: true }
+  }
+  if (t2) {
+    return { label: '撒旦军队（T3）', icon: '双足翼龙', done: false }
+  }
+  if (t1) {
+    return { label: '撒旦军队（T2）', icon: '食人魔', done: false }
+  }
+  return { label: '撒旦军队（T1）', icon: '黑暗魔法师', done: false }
+}
+
+const bossProgressList = computed(() => {
+  const payloadItems = worldProgress.value?.progress_items
+  if (Array.isArray(payloadItems) && payloadItems.length > 0) {
+    const dd2StageMap = new Map(payloadItems
+      .filter((item) => {
+        const k = String(item?.key || '')
+        return k === 'old_ones_army_t1' || k === 'old_ones_army_t2' || k === 'old_ones_army_t3'
+      })
+      .map((item) => [String(item?.key || ''), !!item?.done]))
+
+    const dd2T1 = dd2StageMap.get('old_ones_army_t1') || false
+    const dd2T2 = dd2StageMap.get('old_ones_army_t2') || false
+    const dd2T3 = dd2StageMap.get('old_ones_army_t3') || false
+
+    const list = payloadItems
+      .filter((item) => {
+        const k = String(item?.key || '')
+        return k !== 'old_ones_army_t1' && k !== 'old_ones_army_t2' && k !== 'old_ones_army_t3' && k !== 'old_ones_army'
+      })
+      .map((item, idx) => {
+      const label = String(item?.name || item?.label || `进度项${idx + 1}`)
+      return {
+        key: String(item?.key || `progress_${idx}`),
+        label,
+        icon: label,
+        done: !!item?.done,
+      }
+    })
+
+    const dd2Display = resolveDd2Display(dd2T1, dd2T2, dd2T3)
+    const dd2Item = {
+      key: 'old_ones_army',
+      label: dd2Display.label,
+      icon: dd2Display.icon,
+      done: dd2Display.done,
+    }
+
+    const insertAfterKey = 'golem'
+    const insertIndex = list.findIndex((x) => x.key === insertAfterKey)
+    if (insertIndex >= 0) {
+      list.splice(insertIndex + 1, 0, dd2Item)
+    } else {
+      list.push(dd2Item)
+    }
+
+    return list
+  }
+
+  const isCrimson = !!worldProgress.value?.is_crimson
+  return [
+    { key: 'king_slime', label: '史莱姆王', icon: '史莱姆王', done: !!worldProgress.value?.king_slime },
+    { key: 'eye_of_cthulhu', label: '克苏鲁之眼', icon: '克苏鲁之眼', done: !!worldProgress.value?.eye_of_cthulhu },
+    { key: 'goblins', label: '哥布林入侵', icon: '哥布林入侵', done: !!worldProgress.value?.goblins },
+    { key: 'eater_of_worlds', label: '世界吞噬怪', icon: '世界吞噬怪', done: !isCrimson && !!worldProgress.value?.eow_or_boc },
+    { key: 'brain_of_cthulhu', label: '克苏鲁之脑', icon: '克苏鲁之脑', done: isCrimson && !!worldProgress.value?.eow_or_boc },
+    { key: 'queen_bee', label: '蜂王', icon: '蜂王', done: !!worldProgress.value?.queen_bee },
+    { key: 'deerclops', label: '独眼巨鹿', icon: '独眼巨鹿', done: !!worldProgress.value?.deerclops },
+    { key: 'skeletron', label: '骷髅王', icon: '骷髅王', done: !!worldProgress.value?.skeletron },
+    { key: 'wall_of_flesh', label: '血肉墙', icon: '血肉墙', done: !!worldProgress.value?.wall_of_flesh },
+    { key: 'frost', label: '雪人军团', icon: '雪人军团', done: !!worldProgress.value?.frost },
+    { key: 'pirates', label: '海盗入侵', icon: '海盗入侵', done: !!worldProgress.value?.pirates },
+    { key: 'queen_slime', label: '史莱姆皇后', icon: '史莱姆皇后', done: !!worldProgress.value?.queen_slime },
+    { key: 'the_twins', label: '双子魔眼', icon: '双子魔眼', done: !!worldProgress.value?.the_twins },
+    { key: 'the_destroyer', label: '毁灭者', icon: '毁灭者', done: !!worldProgress.value?.the_destroyer },
+    { key: 'skeletron_prime', label: '机械骷髅王', icon: '机械骷髅王', done: !!worldProgress.value?.skeletron_prime },
+    { key: 'plantera', label: '世纪之花', icon: '世纪之花', done: !!worldProgress.value?.plantera },
+    { key: 'halloween_king', label: '南瓜月', icon: '南瓜月', done: !!worldProgress.value?.halloween_king },
+    { key: 'christmas_ice_queen', label: '冰霜月', icon: '冰霜月', done: !!worldProgress.value?.christmas_ice_queen },
+    { key: 'golem', label: '石巨人', icon: '石巨人', done: !!worldProgress.value?.golem },
+    {
+      key: 'old_ones_army',
+      label: resolveDd2Display(
+        !!worldProgress.value?.old_ones_army_t1,
+        !!worldProgress.value?.old_ones_army_t2,
+        !!worldProgress.value?.old_ones_army_t3,
+      ).label,
+      icon: resolveDd2Display(
+        !!worldProgress.value?.old_ones_army_t1,
+        !!worldProgress.value?.old_ones_army_t2,
+        !!worldProgress.value?.old_ones_army_t3,
+      ).icon,
+      done: resolveDd2Display(
+        !!worldProgress.value?.old_ones_army_t1,
+        !!worldProgress.value?.old_ones_army_t2,
+        !!worldProgress.value?.old_ones_army_t3,
+      ).done,
+    },
+    { key: 'martians', label: '火星暴乱', icon: '火星暴乱', done: !!worldProgress.value?.martians },
+    { key: 'duke_fishron', label: '猪龙鱼公爵', icon: '猪龙鱼公爵', done: !!worldProgress.value?.duke_fishron },
+    { key: 'empress_of_light', label: '光之女皇', icon: '光之女皇', done: !!worldProgress.value?.empress_of_light },
+    { key: 'lunatic_cultist', label: '拜月教邪教徒', icon: '拜月教邪教徒', done: !!worldProgress.value?.lunatic_cultist },
+    { key: 'tower_solar', label: '日耀柱', icon: '日耀柱', done: !!worldProgress.value?.tower_solar },
+    { key: 'tower_vortex', label: '星旋柱', icon: '星旋柱', done: !!worldProgress.value?.tower_vortex },
+    { key: 'tower_nebula', label: '星云柱', icon: '星云柱', done: !!worldProgress.value?.tower_nebula },
+    { key: 'tower_stardust', label: '星尘柱', icon: '星尘柱', done: !!worldProgress.value?.tower_stardust },
+    { key: 'moon_lord', label: '月亮领主', icon: '月亮领主', done: !!worldProgress.value?.moon_lord },
+  ]
+})
+
+const worldDifficultyLabel = computed(() => {
+  if (!worldProgress.value) return '普通'
+  if (worldProgress.value.world_difficulty) return String(worldProgress.value.world_difficulty)
+  if (worldProgress.value.is_legendary) return '传奇'
+  if (worldProgress.value.is_journey) return '旅途'
+  if (worldProgress.value.is_master) return '大师'
+  if (worldProgress.value.is_expert) return '专家'
+  return '普通'
+})
+
+function bossIconUrl(boss) {
+  const key = String(boss?.key || '').trim()
+  const icon = String(boss?.icon || boss?.label || '').trim()
+  const rawBase = import.meta.env.BASE_URL || '/'
+  const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`
+
+  // 将展示名称对齐到 Web/public/Boss 目录中的真实文件名。
+  const aliasByKey = {
+    king_slime: '史莱姆王',
+    eye_of_cthulhu: '克苏鲁之眼',
+    goblins: '哥布林军队',
+    eater_of_worlds: '世界吞噬怪',
+    brain_of_cthulhu: '克苏鲁之脑',
+    queen_bee: '蜂王',
+    deerclops: '鹿角怪',
+    skeletron: '骷髅王',
+    wall_of_flesh: '血肉墙',
+    frost: '雪人军团',
+    pirates: '海盗入侵',
+    queen_slime: '史莱姆皇后',
+    the_twins: '双子魔眼',
+    the_destroyer: '毁灭者',
+    skeletron_prime: '机械骷髅王',
+    plantera: '世纪之花',
+    halloween_king: '南瓜月',
+    christmas_ice_queen: '霜月',
+    golem: '石巨人',
+    martians: '火星暴乱',
+    duke_fishron: '猪龙鱼公爵',
+    empress_of_light: '光之女皇',
+    lunatic_cultist: '拜月教邪教徒',
+    tower_solar: '日耀柱',
+    tower_vortex: '星旋柱',
+    tower_nebula: '星云柱',
+    tower_stardust: '星尘柱',
+    moon_lord: '月亮领主',
+    old_ones_army_t1: '黑暗魔法师',
+    old_ones_army_t2: '食人魔',
+    old_ones_army_t3: '双足翼龙',
+  }
+
+  const aliasByName = {
+    哥布林入侵: '哥布林军队',
+    独眼巨鹿: '鹿角怪',
+    冰霜月: '霜月',
+    撒旦军队: '黑暗魔法师',
+  }
+
+  // 对 old_ones_army 优先使用按阶段动态切换的图标（T1/T2/T3）。
+  const resolved = aliasByName[icon] || aliasByKey[key] || icon || '背景'
+  return `${base}Boss/${encodeURIComponent(resolved)}.gif`
+}
+
+function onBossIconError(e) {
+  const img = e?.target
+  if (!img) return
+  const stage = img.dataset.fallbackStage || 'none'
+  if (stage === 'none') {
+    img.dataset.fallbackStage = 'jpg'
+    img.src = img.src.replace(/\.gif(\?.*)?$/i, '.jpg$1')
+    return
+  }
+  if (stage === 'jpg') {
+    img.dataset.fallbackStage = 'final'
+    const rawBase = import.meta.env.BASE_URL || '/'
+    const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`
+    // 最终兜底使用已确认存在的文件。
+    img.src = `${base}Boss/%E5%8F%B2%E8%8E%B1%E5%A7%86%E7%8E%8B.gif`
+  }
+}
 
 const sortedByTime   = computed(() =>
   [...(playerStats.value || [])].sort((a, b) => b.online_seconds - a.online_seconds).slice(0, 10))
@@ -462,6 +644,38 @@ function fetchPlayerStats() {
   if (!activeServerKey.value) return
   sendWs({ type: 'player_stats', msg_id: Date.now().toString(), timestamp: Date.now(),
            payload: { agent_key: activeServerKey.value } })
+}
+
+function normalizePlayerStats(rows) {
+  if (!Array.isArray(rows)) return []
+  return rows
+    .map((r) => {
+      const name = (r?.name ?? r?.Name ?? r?.player ?? r?.username ?? '').toString().trim()
+      const deathsRaw = r?.deaths ?? r?.Deaths ?? 0
+      const onlineRaw = r?.online_seconds ?? r?.OnlineSeconds ?? r?.onlineSeconds ?? 0
+      const deaths = Number.isFinite(Number(deathsRaw)) ? Number(deathsRaw) : 0
+      const onlineSeconds = Number.isFinite(Number(onlineRaw)) ? Number(onlineRaw) : 0
+      return {
+        name,
+        deaths,
+        online_seconds: onlineSeconds,
+      }
+    })
+    .filter((r) => r.name.length > 0)
+}
+
+function startPlayerStatsPolling() {
+  stopPlayerStatsPolling()
+  if (!props.agentOnline || !activeServerKey.value) return
+  playerStatsTimer = setInterval(() => {
+    fetchPlayerStats()
+  }, 15000)
+}
+
+function stopPlayerStatsPolling() {
+  if (!playerStatsTimer) return
+  clearInterval(playerStatsTimer)
+  playerStatsTimer = null
 }
 
 function drawMinimap() {
@@ -741,10 +955,10 @@ function onWsMessage(e) {
   } else if (pkt.type === 'world_progress_resp') {
     if (pkt.payload?.success) worldProgress.value = pkt.payload.progress
   } else if (pkt.type === 'player_stats_resp') {
-    if (pkt.payload?.success) playerStats.value = pkt.payload.stats
+    if (pkt.payload?.success) playerStats.value = normalizePlayerStats(pkt.payload.stats)
   } else if (pkt.type === 'get_inventory_resp') {
     const p = pkt.payload || {}
-    // PAP 拉取 ssc 信息
+    // 玩家操作面板拉取 ssc 信息
     if (papInvReqId && p.ref_id === papInvReqId) {
       papInvReqId = null
       papSscEnabled.value = !!p.ssc_enabled
@@ -770,7 +984,9 @@ watch(() => props.agentOnline, (val) => {
   if (val && activeServerKey.value) {
     fetchWorldProgress()
     fetchPlayerStats()
+    startPlayerStatsPolling()
   } else if (!val) {
+    stopPlayerStatsPolling()
     serverStats.value    = null
     worldProgress.value  = null
     playerStats.value    = null
@@ -802,7 +1018,10 @@ watch(activeServerKey, () => {
   if (props.agentOnline && activeServerKey.value) {
     fetchWorldProgress()
     fetchPlayerStats()
+    startPlayerStatsPolling()
     nextTick(() => loadMapCache())
+  } else {
+    stopPlayerStatsPolling()
   }
 })
 
@@ -812,9 +1031,13 @@ onMounted(() => {
   if (props.agentOnline && activeServerKey.value) {
     fetchWorldProgress()
     fetchPlayerStats()
+    startPlayerStatsPolling()
   }
 })
-onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
+onUnmounted(() => {
+  stopPlayerStatsPolling()
+  window.removeEventListener('ws-message', onWsMessage)
+})
 
 const statCards = computed(() => [
   {
@@ -1120,50 +1343,66 @@ const statCards = computed(() => [
 
 /* ── 进度 + 排行 双列 ── */
 .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
-.bottom-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 20px; }
-.bc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
-.bc-title { font-size: 13px; font-weight: 700; color: #1e293b; flex: 1; }
+.bottom-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 20px 22px; }
+.bc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.bc-title { font-size: 15px; font-weight: 700; color: #1e293b; flex: 1; }
 .bc-refresh {
-  font-size: 14px; background: none; border: none; cursor: pointer;
+  font-size: 16px; background: none; border: none; cursor: pointer;
   color: #94a3b8; padding: 2px 5px; border-radius: 4px;
 }
 .bc-refresh:hover { color: #3b82f6; background: #eff6ff; }
 .bc-load-btn {
-  font-size: 12px; padding: 6px 14px;
+  font-size: 13px; padding: 7px 15px;
   background: #f8fafc; border: 1px solid #e2e8f0;
   border-radius: 7px; cursor: pointer; color: #475569; margin-top: 4px;
 }
 .bc-load-btn:hover { background: #eff6ff; border-color: #93c5fd; color: #3b82f6; }
 
 .world-mode-tag {
-  font-size: 12px; font-weight: 600; color: #b45309; background: #fef3c7;
-  border-radius: 6px; padding: 2px 10px; display: inline-block; margin-bottom: 10px;
+  font-size: 13px; font-weight: 600; color: #b45309; background: #fef3c7;
+  border-radius: 6px; padding: 4px 12px; display: inline-block; margin-bottom: 12px;
 }
 .world-mode-tag.normal { color: #166534; background: #dcfce7; }
-.boss-list { display: flex; flex-direction: column; gap: 3px; max-height: 320px; overflow-y: auto; }
-.boss-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; padding: 3px 0; }
+.world-progress-summary {
+  font-size: 13px;
+  color: #334155;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.boss-list { display: flex; flex-direction: column; gap: 9px; max-height: 520px; overflow-y: auto; }
+.boss-item { display: flex; align-items: center; gap: 14px; font-size: 17px; color: #94a3b8; padding: 6px 0; min-height: 74px; }
 .boss-item.done { color: #1e293b; }
-.boss-check { font-size: 14px; }
-.boss-name  { font-size: 13px; }
+.boss-icon {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  object-position: center;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  flex-shrink: 0;
+}
+.boss-check { font-size: 22px; line-height: 1; }
+.boss-name  { font-size: 18px; font-weight: 700; }
 
 .lb-tabs { display: flex; gap: 4px; }
 .lb-tab {
-  font-size: 11px; padding: 3px 8px; border-radius: 5px;
+  font-size: 12px; padding: 4px 10px; border-radius: 6px;
   border: 1px solid #e2e8f0; background: #f8fafc; color: #475569;
   cursor: pointer; transition: all .15s;
 }
 .lb-tab.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
-.lb-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.lb-list { display: flex; flex-direction: column; gap: 3px; max-height: 340px; overflow-y: auto; }
 .lb-row {
   display: flex; align-items: center; gap: 10px;
-  padding: 5px 0; border-bottom: 1px solid #f1f5f9;
+  padding: 7px 0; border-bottom: 1px solid #f1f5f9;
 }
-.lb-rank { font-size: 12px; font-weight: 700; color: #94a3b8; width: 20px; text-align: center; flex-shrink: 0; }
+.lb-rank { font-size: 13px; font-weight: 700; color: #94a3b8; width: 22px; text-align: center; flex-shrink: 0; }
 .lb-rank.top0 { color: #f59e0b; }
 .lb-rank.top1 { color: #94a3b8; }
 .lb-rank.top2 { color: #b45309; }
-.lb-name { flex: 1; font-size: 13px; color: #1e293b; }
-.lb-val  { font-size: 12px; color: #475569; font-weight: 600; }
+.lb-name { flex: 1; font-size: 14px; color: #1e293b; }
+.lb-val  { font-size: 13px; color: #475569; font-weight: 600; }
 
 .empty-hint { font-size: 13px; color: #94a3b8; padding: 12px 0; display: flex; align-items: center; gap: 10px; }
 

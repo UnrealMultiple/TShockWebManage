@@ -58,17 +58,17 @@ export function leaveServer(server_id) {
   return request('DELETE', `/api/servers/${server_id}/leave`)
 }
 
-/** 踢出成员（Owner） */
+/** 踢出成员（服主） */
 export function kickMember(server_id, user_id) {
   return request('DELETE', `/api/servers/${server_id}/members/${user_id}`)
 }
 
-/** 解散服务器（Owner） */
+/** 解散服务器（服主） */
 export function dissolveServer(server_id) {
   return request('DELETE', `/api/servers/${server_id}`)
 }
 
-/** 更新服务器信息（Owner） */
+/** 更新服务器信息（服主） */
 export function updateServer(server_id, data) {
   return request('PATCH', `/api/servers/${server_id}`, data)
 }
@@ -89,17 +89,17 @@ export function listPanelGroups(server_id) {
   return request('GET', `/api/servers/${server_id}/panel-groups`)
 }
 
-/** 创建面板权限组（Owner） */
-export function createPanelGroup(server_id, { name, description, permissions }) {
-  return request('POST', `/api/servers/${server_id}/panel-groups`, { name, description, permissions })
+/** 创建面板权限组（服主） */
+export function createPanelGroup(server_id, { name, description, parent_group_id, permissions }) {
+  return request('POST', `/api/servers/${server_id}/panel-groups`, { name, description, parent_group_id, permissions })
 }
 
-/** 更新面板权限组（Owner） */
-export function updatePanelGroup(server_id, group_id, { name, description, permissions }) {
-  return request('PUT', `/api/servers/${server_id}/panel-groups/${group_id}`, { name, description, permissions })
+/** 更新面板权限组（服主） */
+export function updatePanelGroup(server_id, group_id, { name, description, parent_group_id, permissions }) {
+  return request('PUT', `/api/servers/${server_id}/panel-groups/${group_id}`, { name, description, parent_group_id, permissions })
 }
 
-/** 删除面板权限组（Owner） */
+/** 删除面板权限组（服主） */
 export function deletePanelGroup(server_id, group_id) {
   return request('DELETE', `/api/servers/${server_id}/panel-groups/${group_id}`)
 }
@@ -109,7 +109,7 @@ export function getMemberPanelGroup(server_id, user_id) {
   return request('GET', `/api/servers/${server_id}/members/${user_id}/panel-group`)
 }
 
-/** 分配成员到面板权限组（Owner/web_staff） */
+/** 分配成员到面板权限组（服主/网页管理员） */
 export function assignMemberPanelGroup(server_id, user_id, group_id) {
   return request('PUT', `/api/servers/${server_id}/members/${user_id}/panel-group`, { group_id })
 }

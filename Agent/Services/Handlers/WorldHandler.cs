@@ -9,6 +9,7 @@ using Terraria;
 using Terraria.Map;
 using TShockAPI;
 using TerrariaManagerAgent.Models;
+using System.Reflection;
 
 namespace TerrariaManagerAgent.Services.Handlers
 {
@@ -16,6 +17,56 @@ namespace TerrariaManagerAgent.Services.Handlers
     public class WorldHandler : HandlerBase
     {
         public WorldHandler(WebSocketService wsService) : base(wsService) { }
+
+        private static Type? ResolveDd2EventType()
+        {
+            // 不要依赖 Type.GetType("..., TerrariaServer")。
+            // 改为直接从已加载程序集里解析类型。
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                var t = asm.GetType("Terraria.GameContent.Events.DD2Event", throwOnError: false, ignoreCase: false);
+                if (t != null) return t;
+            }
+            return null;
+        }
+
+        private static bool TryReadStaticBoolField(Type type, string fieldName, out bool value)
+        {
+            value = false;
+            try
+            {
+                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+                var field = type.GetField(fieldName, flags);
+                if (field == null || field.FieldType != typeof(bool)) return false;
+                value = (bool)(field.GetValue(null) ?? false);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static (bool T1, bool T2, bool T3) ReadDd2Stages()
+        {
+            var dd2Type = ResolveDd2EventType();
+            if (dd2Type == null)
+            {
+                return (false, false, false);
+            }
+
+            // 持久化通关标记（会写入世界文件）。
+            _ = TryReadStaticBoolField(dd2Type, "DownedInvasionT1", out var doneT1);
+            _ = TryReadStaticBoolField(dd2Type, "DownedInvasionT2", out var doneT2);
+            _ = TryReadStaticBoolField(dd2Type, "DownedInvasionT3", out var doneT3);
+
+            // 本次运行期标记（在 StartInvasion 时会重置）。
+            _ = TryReadStaticBoolField(dd2Type, "_downedDarkMageT1", out var runT1);
+            _ = TryReadStaticBoolField(dd2Type, "_downedOgreT2", out var runT2);
+            _ = TryReadStaticBoolField(dd2Type, "_spawnedBetsyT3", out var runT3);
+
+            var t1 = doneT1 || runT1;
+            var t2 = doneT2 || runT2;
+            var t3 = doneT3 || runT3;
+            return (t1, t2, t3);
+        }
 
         // ═══════════════════════════════════════════════════════════
         //  小地图生成
@@ -194,26 +245,26 @@ namespace TerrariaManagerAgent.Services.Handlers
         private static byte[] EncodePng(int w, int h, byte[] rgb)
         {
             using var ms = new MemoryStream();
-            // PNG 文件签名
+            // PNG 文件头签名
             ms.Write(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 });
-            // IHDR
+            // IHDR 块
             var ihdr = new byte[13];
             ihdr[0] = (byte)(w >> 24); ihdr[1] = (byte)(w >> 16); ihdr[2] = (byte)(w >> 8); ihdr[3] = (byte)w;
             ihdr[4] = (byte)(h >> 24); ihdr[5] = (byte)(h >> 16); ihdr[6] = (byte)(h >> 8); ihdr[7] = (byte)h;
             ihdr[8] = 8; ihdr[9] = 2; // 8-bit RGB truecolor
             WritePngChunk(ms, "IHDR", ihdr);
-            // IDAT：每行前插入 filter=0(None)，然后 zlib 压缩
+            // IDAT：每行前插入过滤器=0（无过滤），再进行 zlib 压缩
             using var raw = new MemoryStream(h * (1 + w * 3));
             for (int y = 0; y < h; y++)
             {
-                raw.WriteByte(0); // filter: None
+                raw.WriteByte(0); // 过滤器：无
                 raw.Write(rgb, y * w * 3, w * 3);
             }
             using var comp = new MemoryStream();
             using (var zlib = new ZLibStream(comp, CompressionLevel.Fastest, leaveOpen: true))
                 raw.WriteTo(zlib);
             WritePngChunk(ms, "IDAT", comp.ToArray());
-            // IEND
+            // IEND 结束块
             WritePngChunk(ms, "IEND", Array.Empty<byte>());
             return ms.ToArray();
         }
@@ -226,12 +277,83 @@ namespace TerrariaManagerAgent.Services.Handlers
         {
             try
             {
+                var isCrimson = WorldGen.crimson;
+
+                // 对齐参考实现：后端直接给出有序进度列表（名称 + 完成状态）
+                var dd2Read = ReadDd2Stages();
+                var dd2T1 = dd2Read.T1;
+                var dd2T2 = dd2Read.T2;
+                var dd2T3 = dd2Read.T3;
+                var dd2Done = dd2T1 || dd2T2 || dd2T3;
+
+                var isJourney = Main.GameMode == 3;
+                var isLegendary = Main.masterMode && Main.getGoodWorld;
+                var worldDifficulty = isLegendary
+                    ? "传奇"
+                    : isJourney
+                        ? "旅途"
+                        : Main.masterMode
+                            ? "大师"
+                            : Main.expertMode
+                                ? "专家"
+                                : "普通";
+
+                var progressDefs = new (string Key, string Name, bool Done)[]
+                {
+                    ("king_slime", "史莱姆王", NPC.downedSlimeKing),
+                    ("eye_of_cthulhu", "克苏鲁之眼", NPC.downedBoss1),
+                    ("goblins", "哥布林入侵", NPC.downedGoblins),
+                    ("eater_of_worlds", "世界吞噬怪", !isCrimson && NPC.downedBoss2),
+                    ("brain_of_cthulhu", "克苏鲁之脑", isCrimson && NPC.downedBoss2),
+                    ("queen_bee", "蜂王", NPC.downedQueenBee),
+                    ("deerclops", "独眼巨鹿", NPC.downedDeerclops),
+                    ("skeletron", "骷髅王", NPC.downedBoss3),
+                    ("wall_of_flesh", "血肉墙", Main.hardMode),
+                    ("frost", "雪人军团", NPC.downedFrost),
+                    ("pirates", "海盗入侵", NPC.downedPirates),
+                    ("queen_slime", "史莱姆皇后", NPC.downedQueenSlime),
+                    ("the_twins", "双子魔眼", NPC.downedMechBoss2),
+                    ("the_destroyer", "毁灭者", NPC.downedMechBoss1),
+                    ("skeletron_prime", "机械骷髅王", NPC.downedMechBoss3),
+                    ("plantera", "世纪之花", NPC.downedPlantBoss),
+                    ("halloween_king", "南瓜月", NPC.downedHalloweenKing),
+                    ("christmas_ice_queen", "冰霜月", NPC.downedChristmasIceQueen),
+                    ("golem", "石巨人", NPC.downedGolemBoss),
+                    ("old_ones_army_t1", "撒旦军队T1（黑暗魔法师）", dd2T1),
+                    ("old_ones_army_t2", "撒旦军队T2（食人魔）", dd2T2),
+                    ("old_ones_army_t3", "撒旦军队T3（双足翼龙）", dd2T3),
+                    ("martians", "火星暴乱", NPC.downedMartians),
+                    ("duke_fishron", "猪龙鱼公爵", NPC.downedFishron),
+                    ("empress_of_light", "光之女皇", NPC.downedEmpressOfLight),
+                    ("lunatic_cultist", "拜月教邪教徒", NPC.downedAncientCultist),
+                    ("tower_solar", "日耀柱", NPC.downedTowerSolar),
+                    ("tower_vortex", "星旋柱", NPC.downedTowerVortex),
+                    ("tower_nebula", "星云柱", NPC.downedTowerNebula),
+                    ("tower_stardust", "星尘柱", NPC.downedTowerStardust),
+                    ("moon_lord", "月亮领主", NPC.downedMoonlord),
+                };
+
+                var progressItems = progressDefs
+                    .Select(x => (object)new { key = x.Key, name = x.Name, done = x.Done })
+                    .ToList();
+
+                var progressCompleted = progressDefs.Count(x => x.Done);
+                var progressTotal = progressDefs.Length;
+
                 var progress = new
                 {
+                    progress_items   = progressItems,
+                    progress_done    = progressCompleted,
+                    progress_total   = progressTotal,
+                    progress_percent = progressTotal > 0
+                        ? Math.Round(progressCompleted * 100.0 / progressTotal, 1)
+                        : 0,
+
                     // ── 前期 Boss ──────────────────────────────
                     king_slime      = NPC.downedSlimeKing,
                     eye_of_cthulhu  = NPC.downedBoss1,
                     eow_or_boc      = NPC.downedBoss2,   // 腐化世界:食界虫  猩红世界:克苏鲁大脑
+                    evil_boss       = NPC.downedBoss2,
                     skeletron       = NPC.downedBoss3,
                     queen_bee       = NPC.downedQueenBee,
                     deerclops       = NPC.downedDeerclops,
@@ -249,18 +371,39 @@ namespace TerrariaManagerAgent.Services.Handlers
                     plantera        = NPC.downedPlantBoss,
                     golem           = NPC.downedGolemBoss,
                     empress         = NPC.downedEmpressOfLight,
+                    empress_of_light= NPC.downedEmpressOfLight,
                     duke_fishron    = NPC.downedFishron,
 
                     // ── 终局 ───────────────────────────────────
                     ancient_cultist = NPC.downedAncientCultist,
+                    lunatic_cultist = NPC.downedAncientCultist,
                     moon_lord       = NPC.downedMoonlord,
+
+                    // ── 事件/天界柱 ───────────────────────────
+                    halloween_king  = NPC.downedHalloweenKing,
+                    martians        = NPC.downedMartians,
+                    tower_solar     = NPC.downedTowerSolar,
+                    tower_vortex    = NPC.downedTowerVortex,
+                    tower_nebula    = NPC.downedTowerNebula,
+                    tower_stardust  = NPC.downedTowerStardust,
+                    goblins         = NPC.downedGoblins,
+                    pirates         = NPC.downedPirates,
+                    frost           = NPC.downedFrost,
+                    christmas_ice_queen = NPC.downedChristmasIceQueen,
+                    old_ones_army = dd2Done,
+                    old_ones_army_t1 = dd2T1,
+                    old_ones_army_t2 = dd2T2,
+                    old_ones_army_t3 = dd2T3,
 
                     // ── 世界属性 ───────────────────────────────
                     world_name      = Main.worldName ?? "",
                     world_id        = Main.worldID,
-                    is_crimson      = WorldGen.crimson,  // true=猩红, false=腐化
+                    is_crimson      = isCrimson,  // true=猩红，false=腐化
                     is_expert       = Main.expertMode,
                     is_master       = Main.masterMode,
+                    is_journey      = isJourney,
+                    is_legendary    = isLegendary,
+                    world_difficulty = worldDifficulty,
                     world_width     = Main.maxTilesX,
                     world_height    = Main.maxTilesY,
                 };

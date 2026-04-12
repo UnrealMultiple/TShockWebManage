@@ -258,9 +258,9 @@ const characters  = ref([])
 const loadingChars = ref(false)
 const serverIdCache = ref(null)
 
-// charInfo: { [charName]: { loading, group, ssc_enabled, has_ssc_data, inventory } }
+// charInfo: { [角色名]: { loading, group, ssc_enabled, has_ssc_data, inventory } }
 const charInfo = ref({})
-// reqMap: { [msgId]: charName }  —— 用于匹配 WS 回包
+// reqMap: { [msgId]: 角色名 }  —— 用于匹配 WS 回包
 const reqMap = ref({})
 
 async function loadCharacters() {

@@ -22,7 +22,7 @@ namespace TerrariaManagerAgent
         private readonly CancellationTokenSource _pluginCts = new CancellationTokenSource();
 
         public override string Name => "RemoteManagerAgent";
-        public override Version Version => new Version(1, 2, 0);
+        public override Version Version => new Version(1, 2, 1);
         public override string Author => "熙恩";
         public override string Description => "TShock 远程管理代理插件";
 
@@ -96,6 +96,9 @@ namespace TerrariaManagerAgent
 
                     // 取消后台循环（Task.Delay 立即中断）
                     _pluginCts.Cancel();
+
+                    // 刷盘当前在线会话时长，避免重载/停服丢失在线统计
+                    StatsTracker.FlushAllOnlineSessions();
 
                     // 释放服务资源（关闭连接，取消 Token）
                     _wsService?.Dispose();

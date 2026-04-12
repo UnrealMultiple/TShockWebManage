@@ -13,6 +13,9 @@ namespace TerrariaManagerAgent.Services
     /// </summary>
     public static class StatsTracker
     {
+        private const string NewDbFileName = "TShockAgent.sqlite";
+        private const string LegacyDbFileName = "agent_stats.db";
+
         private static readonly ConcurrentDictionary<string, DateTime> _sessionStart
             = new(StringComparer.OrdinalIgnoreCase);
 
@@ -23,9 +26,10 @@ namespace TerrariaManagerAgent.Services
         {
             if (_inited) return;
             _inited = true;
-            _dbPath = Path.Combine(TShock.SavePath, "agent_stats.db");
+            _dbPath = Path.Combine(TShock.SavePath, NewDbFileName);
             try
             {
+                TryMigrateLegacyDb();
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = @"
@@ -43,6 +47,17 @@ namespace TerrariaManagerAgent.Services
             }
         }
 
+        private static void TryMigrateLegacyDb()
+        {
+            var legacyDbPath = Path.Combine(TShock.SavePath, LegacyDbFileName);
+            if (File.Exists(_dbPath) || !File.Exists(legacyDbPath))
+                return;
+
+            // 旧版本用 agent_stats.db，同一数据格式可直接复制迁移。
+            File.Copy(legacyDbPath, _dbPath, overwrite: false);
+            TShock.Log.Info($"[Agent] StatsTracker 数据库已迁移到 {NewDbFileName}");
+        }
+
         private static SqliteConnection OpenDb()
         {
             var conn = new SqliteConnection($"Data Source={_dbPath}");
@@ -53,6 +68,7 @@ namespace TerrariaManagerAgent.Services
         public static void OnJoin(string name)
         {
             if (string.IsNullOrWhiteSpace(name)) return;
+            EnsureRowSafe(name);
             _sessionStart[name] = DateTime.UtcNow;
         }
 
@@ -106,7 +122,7 @@ namespace TerrariaManagerAgent.Services
             {
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT name, deaths, online_seconds FROM agent_player_stats ORDER BY online_seconds DESC LIMIT 100";
+                cmd.CommandText = "SELECT name, deaths, online_seconds FROM agent_player_stats";
                 using var reader = cmd.ExecuteReader();
                 while (reader.Read())
                 {
@@ -142,6 +158,35 @@ namespace TerrariaManagerAgent.Services
             }
 
             return rows;
+        }
+
+        public static void FlushAllOnlineSessions()
+        {
+            foreach (var name in _sessionStart.Keys)
+                OnLeave(name);
+        }
+
+        public static void SyncOnlinePlayers(IEnumerable<string> onlineNames)
+        {
+            if (onlineNames == null) return;
+
+            foreach (var raw in onlineNames)
+            {
+                var name = raw?.Trim() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                if (!_sessionStart.ContainsKey(name))
+                    OnJoin(name);
+            }
+        }
+
+        private static void EnsureRowSafe(string name)
+        {
+            try
+            {
+                using var conn = OpenDb();
+                EnsureRow(conn, name);
+            }
+            catch { }
         }
     }
 

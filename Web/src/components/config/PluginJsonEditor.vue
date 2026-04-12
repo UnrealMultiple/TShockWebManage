@@ -57,6 +57,38 @@
         </div>
       </div>
 
+      <!-- ── OBJECT ARRAY (structured) ── -->
+      <div v-else-if="typeOf(data[key]) === 'arr-obj'" class="pje-row pje-row-block pje-nested-block">
+        <div class="pje-key pje-key-block">{{ key }}</div>
+        <div class="pje-arr-obj-wrap">
+          <div v-for="(item, i) in data[key]" :key="i" class="pje-arr-obj-item">
+            <div class="pje-arr-obj-head" @click="toggleExpand(`${key}#${i}`)">
+              <svg class="pje-caret" :style="{ transform: isExpanded(`${key}#${i}`) ? 'rotate(90deg)' : 'none' }"
+                viewBox="0 0 12 12" fill="currentColor">
+                <path d="M4 2l5 4-5 4V2z"/>
+              </svg>
+              <span class="pje-arr-obj-title">条目 #{{ i + 1 }}</span>
+              <span class="pje-obj-hint" v-if="item && typeof item === 'object' && !Array.isArray(item)">{{ objectHint(item) }}</span>
+              <button class="pje-del-btn" @click.stop="removeArrItem(key, i)" title="删除">✕</button>
+            </div>
+            <div v-if="isExpanded(`${key}#${i}`)" class="pje-arr-obj-body">
+              <PluginJsonEditor
+                v-if="item && typeof item === 'object'"
+                :data="item"
+                :depth="depth + 1"
+                @change="v => setArrObjItem(key, i, v)"
+              />
+              <textarea v-else class="pje-json-ta" rows="3" spellcheck="false"
+                :value="JSON.stringify(item, null, 2)"
+                @input="setArrObjItemJson(key, i, $event.target.value)"
+              ></textarea>
+            </div>
+          </div>
+          <div v-if="data[key].length === 0" class="pje-empty-hint">暂无条目</div>
+          <button class="pje-add-btn" @click="addArrObjItem(key)">+ 添加对象条目</button>
+        </div>
+      </div>
+
       <!-- ── DICT-LIKE OBJECT ── -->
       <div v-else-if="typeOf(data[key]) === 'dict'" class="pje-row pje-row-block">
         <div class="pje-key pje-key-block">{{ key }}</div>
@@ -165,8 +197,7 @@ function isDictLike(obj) {
   const vals = Object.values(obj)
   if (vals.length === 0) return false
   if (!vals.every(v => typeof v === 'object' && v !== null && !Array.isArray(v))) return false
-  const keySets = vals.map(v => JSON.stringify(Object.keys(v).sort()))
-  return new Set(keySets).size === 1
+  return true
 }
 
 function isFloat(n) { return n !== Math.floor(n) }
@@ -186,6 +217,21 @@ function setArrItem(key, i, rawVal) {
   set(key, arr)
 }
 
+function setArrObjItem(key, i, val) {
+  const arr = [...props.data[key]]
+  arr[i] = val
+  set(key, arr)
+}
+
+function setArrObjItemJson(key, i, text) {
+  try {
+    const val = JSON.parse(text)
+    setArrObjItem(key, i, val)
+  } catch {
+    // ignore parse errors while typing
+  }
+}
+
 function removeArrItem(key, i) {
   set(key, props.data[key].filter((_, idx) => idx !== i))
 }
@@ -199,13 +245,42 @@ function addArrItem(key) {
   set(key, [...arr, newItem])
 }
 
+function makeEmptyLike(v) {
+  if (v === null || v === undefined) return ''
+  if (Array.isArray(v)) return []
+  if (typeof v === 'object') {
+    const out = {}
+    for (const [k, val] of Object.entries(v)) out[k] = makeEmptyLike(val)
+    return out
+  }
+  if (typeof v === 'number') return 0
+  if (typeof v === 'boolean') return false
+  return ''
+}
+
+function addArrObjItem(key) {
+  const arr = props.data[key]
+  const first = arr[0]
+  const newItem = first && typeof first === 'object' ? makeEmptyLike(first) : {}
+  set(key, [...arr, newItem])
+}
+
 // ── Dict ops ───────────────────────────────────────────────────────────
 function getDictCols(obj) {
   const vals = Object.values(obj)
   if (!vals.length) return []
-  const fv = vals[0]
-  if (typeof fv !== 'object' || fv === null) return []
-  return Object.keys(fv)
+  const cols = []
+  const seen = new Set()
+  for (const v of vals) {
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) continue
+    for (const k of Object.keys(v)) {
+      if (!seen.has(k)) {
+        seen.add(k)
+        cols.push(k)
+      }
+    }
+  }
+  return cols
 }
 
 function renameDictKey(parentKey, oldKey, newKey) {
@@ -219,7 +294,17 @@ function renameDictKey(parentKey, oldKey, newKey) {
 
 function setDictSubVal(parentKey, entryKey, col, rawVal) {
   const origVal = props.data[parentKey][entryKey][col]
-  const newVal  = typeof origVal === 'number' ? toNum(rawVal, origVal) : rawVal
+  let sampleVal = origVal
+  if (sampleVal === undefined) {
+    const siblings = Object.values(props.data[parentKey]).filter(v => typeof v === 'object' && v !== null && !Array.isArray(v))
+    for (const s of siblings) {
+      if (s[col] !== undefined) {
+        sampleVal = s[col]
+        break
+      }
+    }
+  }
+  const newVal  = typeof sampleVal === 'number' ? toNum(rawVal, sampleVal) : rawVal
   const src     = props.data[parentKey]
   set(parentKey, { ...src, [entryKey]: { ...src[entryKey], [col]: newVal } })
 }
@@ -287,26 +372,27 @@ function setJson(key, text) {
 <style scoped>
 /* ── Root ── */
 .pje-root {
-  display: flex; flex-direction: column; gap: 1px;
+  display: flex; flex-direction: column; gap: 2px;
 }
 
 /* ── Row ── */
 .pje-row {
   display: flex; align-items: center; gap: 10px;
-  padding: 4px 10px; min-height: 34px; border-radius: 6px;
-  transition: background .1s;
+  padding: 5px 10px; min-height: 36px; border-radius: 8px;
+  border: 1px solid transparent;
+  transition: background .12s, border-color .12s;
 }
-.pje-row:hover { background: #f8fafc; }
+.pje-row:hover { background: #f8fafc; border-color: #edf2f7; }
 .pje-row-block { flex-direction: column; align-items: flex-start; gap: 5px; padding-top: 6px; padding-bottom: 6px; }
 
 /* ── Key label ── */
 .pje-key {
-  font-size: 12.5px; font-weight: 500; color: #374151;
+  font-size: 13px; font-weight: 600; color: #334155;
   min-width: 170px; max-width: 260px; flex-shrink: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
 }
-.pje-key-block  { min-width: unset; max-width: unset; font-size: 13px; }
+.pje-key-block  { min-width: unset; max-width: unset; font-size: 13.5px; }
 
 /* ── Collapsible key ── */
 .pje-key-collapsible {
@@ -333,10 +419,10 @@ function setJson(key, text) {
 /* ── Inputs ── */
 .pje-input {
   border: 1px solid #e2e8f0; border-radius: 6px;
-  padding: 5px 8px; font-size: 12.5px; color: #1e293b;
+  padding: 6px 9px; font-size: 13px; color: #1e293b;
   outline: none; background: #fff; transition: border-color .15s;
 }
-.pje-input:focus { border-color: #3b82f6; }
+.pje-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
 .pje-num-input  { width: 110px; }
 .pje-str-input  { flex: 1; min-width: 140px; max-width: 420px; }
 
@@ -368,6 +454,18 @@ function setJson(key, text) {
 .pje-arr-input { flex: 1; max-width: 360px; }
 .pje-empty-hint { font-size: 12px; color: #94a3b8; padding: 3px 0; }
 
+/* ── Object array ── */
+.pje-arr-obj-wrap { width: 100%; padding-left: 6px; display: flex; flex-direction: column; gap: 8px; }
+.pje-arr-obj-item {
+  width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; background: #ffffff;
+}
+.pje-arr-obj-head {
+  display: flex; align-items: center; gap: 6px; padding: 7px 8px; cursor: pointer;
+  border-bottom: 1px solid #f1f5f9;
+}
+.pje-arr-obj-title { font-size: 12.5px; font-weight: 600; color: #1e293b; }
+.pje-arr-obj-body { padding: 6px 6px 8px 6px; }
+
 /* ── Buttons ── */
 .pje-del-btn {
   background: none; border: 1px solid #fca5a5; color: #ef4444; border-radius: 5px;
@@ -384,7 +482,7 @@ function setJson(key, text) {
 .pje-dict-wrap { width: 100%; padding-left: 6px; overflow-x: auto; }
 .pje-dict-head {
   display: flex; gap: 4px; padding: 4px 6px;
-  font-size: 11px; font-weight: 600; color: #64748b;
+  font-size: 11px; font-weight: 700; color: #64748b;
   text-transform: uppercase; letter-spacing: .04em;
   border-bottom: 1px solid #e2e8f0;
 }
@@ -405,9 +503,9 @@ function setJson(key, text) {
 .pje-json-ta {
   width: 100%; max-width: 600px; box-sizing: border-box;
   border: 1px solid #e2e8f0; border-radius: 6px;
-  padding: 8px 10px; font-size: 12px; line-height: 1.5;
+  padding: 8px 10px; font-size: 12.5px; line-height: 1.55;
   font-family: 'SFMono-Regular', Consolas, monospace; color: #1e293b;
   background: #fafafa; resize: vertical; outline: none;
 }
-.pje-json-ta:focus { border-color: #3b82f6; }
+.pje-json-ta:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
 </style>

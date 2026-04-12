@@ -88,7 +88,7 @@ class ServerOut(BaseModel):
     owner_id:    Optional[int]
     created_at:  int
     is_public:   bool = False
-    online:      bool = False          # Agent 是否在线（由 WS 层填充）
+    online:      bool = False          # 代理端是否在线（由 WebSocket 层填充）
     member_count: int = 0
     server_role: Optional[str] = None  # 当前登录用户在该服务器的角色
     panel_group_name: Optional[str] = None        # 当前用户所在面板权限组名
@@ -108,7 +108,7 @@ class ServerDetailOut(ServerOut):
 
 class UpdateMemberRoleReq(BaseModel):
     """更新成员面板角色"""
-    role: str  # owner / web_staff / member
+    role: str  # 服主 / 网页管理员 / 成员
 
 class BindVerifyReq(BaseModel):
     """绑定已有游戏角色的验证码校验"""
@@ -121,11 +121,13 @@ class BindVerifyReq(BaseModel):
 class PanelGroupCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    parent_group_id: Optional[int] = None
     permissions: List[str] = []
 
 class PanelGroupUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    parent_group_id: Optional[int] = None
     permissions: Optional[List[str]] = None
 
 class PanelGroupOut(BaseModel):
@@ -133,8 +135,11 @@ class PanelGroupOut(BaseModel):
     server_id: int
     name: str
     description: Optional[str] = None
+    parent_group_id: Optional[int] = None
+    parent_group_name: Optional[str] = None
     is_builtin: bool
     permissions: List[str]
+    effective_permissions: List[str] = []
     member_count: int = 0
 
 class PanelMemberGroupUpdate(BaseModel):

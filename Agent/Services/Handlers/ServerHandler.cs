@@ -284,7 +284,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                 // 无 BOM 写入，兼容 bash 脚本
                 File.WriteAllText(filePath, content, new System.Text.UTF8Encoding(false));
 
-                // Linux 下自动赋予可执行权限
+                // Linux 环境下自动赋予可执行权限
                 if (Environment.OSVersion.Platform != PlatformID.Win32NT && filename.EndsWith(".sh"))
                 {
                     try
@@ -296,7 +296,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                         chmod.Start();
                         chmod.WaitForExit();
                     }
-                    catch { /* chmod 失败不影响写入结果 */ }
+                    catch { /* chmod 失败不影响文件写入 */ }
                 }
 
                 await _wsService.SendAsync(new {

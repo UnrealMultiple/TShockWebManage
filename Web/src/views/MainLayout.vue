@@ -482,19 +482,17 @@ function sendWs(data) {
     ws.send(JSON.stringify(data))
     return true
   } catch (err) {
-  clearTimeout(retryTimer)
-  if (ws) {
-    try {
-      ws.close(1000, 'Component unmounted')
-    } catch (err) {
-      console.error('[WS] 关闭连接失败:', err)
-    }
-  }
-
     console.error('[WS] 发送消息失败:', err)
     return false
   }
 }
+
+onUnmounted(() => {
+  clearTimeout(retryTimer)
+  if (ws) {
+    try { ws.close(1000, 'Component unmounted') } catch (err) { console.error('[WS] 关闭连接失败:', err) }
+  }
+})
 
 // 通过全局事件让子页面调用 layout 的 sendWs
 window.__tshockSend = sendWs

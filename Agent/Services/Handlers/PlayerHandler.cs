@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json.Linq;
 using Terraria;
+using Terraria.ID;
 using TShockAPI;
 using TerrariaManagerAgent.Models;
 using TerrariaManagerAgent.Services;
@@ -21,23 +22,399 @@ namespace TerrariaManagerAgent.Services.Handlers
         {
             try
             {
-                var stats = StatsTracker.GetAllStats();
+                // 统一输出为前端约定的 snake_case 字段，避免大小写序列化差异导致数据不可见。
+                var stats = StatsTracker.GetAllStats()
+                    .Select(s => new
+                    {
+                        name = s.Name,
+                        deaths = s.Deaths,
+                        online_seconds = s.OnlineSeconds,
+                    })
+                    .OrderByDescending(x => x.online_seconds)
+                    .ThenByDescending(x => x.deaths)
+                    .ToList();
                 await _wsService.SendAsync(new
                 {
-                    type      = "player_stats_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                    type = "player_stats_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = true, stats }
+                    payload = new { ref_id = envelope.MsgId, success = true, stats }
                 });
             }
             catch (Exception ex)
             {
                 await _wsService.SendAsync(new
                 {
-                    type      = "player_stats_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                    type = "player_stats_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
+                });
+            }
+        }
+
+        private static string NormalizeBanlistType(string? raw)
+        {
+            return (raw ?? string.Empty).Trim().ToLowerInvariant() switch
+            {
+                "tile" or "tiles" => "tile",
+                "item" or "items" => "item",
+                "proj" or "projectile" or "projectiles" => "proj",
+                _ => string.Empty
+            };
+        }
+
+        private static List<string> ParseAllowedGroups(JObject jobj)
+        {
+            static IEnumerable<string> SplitGroups(string raw)
+            {
+                return (raw ?? string.Empty)
+                    .Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(x => x.Trim())
+                    .Where(x => !string.IsNullOrWhiteSpace(x));
+            }
+
+            static IEnumerable<string> FromToken(JToken? token)
+            {
+                if (token == null) return Enumerable.Empty<string>();
+
+                if (token.Type == JTokenType.String)
+                    return SplitGroups(token.ToString());
+
+                if (token.Type == JTokenType.Array)
+                {
+                    var list = new List<string>();
+                    foreach (var item in token)
+                    {
+                        if (item == null) continue;
+                        if (item.Type == JTokenType.String)
+                        {
+                            var value = item.ToString().Trim();
+                            if (!string.IsNullOrWhiteSpace(value))
+                                list.Add(value);
+                        }
+                    }
+                    return list;
+                }
+
+                return Enumerable.Empty<string>();
+            }
+
+            var merged = new List<string>();
+            foreach (var key in new[] { "allowedGroups", "allowed_groups", "allowedGroupsList", "allowed_groups_list", "groups" })
+            {
+                merged.AddRange(FromToken(jobj[key]));
+            }
+
+            return merged
+                .Select(x => x.Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        public async Task HandleListBanlists(PacketEnvelope envelope)
+        {
+            try
+            {
+                var tiles = TShock.TileBans.TileBans
+                    .Select(b => new { id = b.ID, allowedGroups = b.AllowedGroups })
+                    .OrderBy(x => x.id)
+                    .ToList();
+
+                var items = (TShock.ItemBans?.DataModel?.ItemBans ?? new List<TShockAPI.DB.ItemBan>())
+                    .Select(b => new { name = b.Name, allowedGroups = b.AllowedGroups })
+                    .OrderBy(x => x.name)
+                    .Cast<object>()
+                    .ToList();
+
+                var projectiles = TShock.ProjectileBans.ProjectileBans
+                    .Select(b => new { id = b.ID, allowedGroups = b.AllowedGroups })
+                    .OrderBy(x => x.id)
+                    .ToList();
+
+                await _wsService.SendAsync(new
+                {
+                    type = "list_banlists_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = true,
+                        tiles,
+                        items,
+                        projectiles
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                await _wsService.SendAsync(new
+                {
+                    type = "list_banlists_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = false,
+                        msg = ex.Message,
+                        tiles = new object[0],
+                        items = new object[0],
+                        projectiles = new object[0]
+                    }
+                });
+            }
+        }
+        public async Task HandleAddBanlist(PacketEnvelope envelope)
+        {
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var banType = NormalizeBanlistType(jobj["ban_type"]?.ToString());
+            var id = jobj["id"]?.Value<int>() ?? 0;
+            var allowedGroups = ParseAllowedGroups(jobj);
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(banType))
+                    throw new Exception("封禁类型无效");
+
+                if (id <= 0)
+                    throw new Exception("ID 无效");
+
+                var invalidGroups = allowedGroups
+                    .Where(g => !TShock.Groups.GroupExists(g))
+                    .ToList();
+                if (invalidGroups.Count > 0)
+                    throw new Exception($"无效组: {string.Join(", ", invalidGroups)}");
+
+                switch (banType)
+                {
+                    case "tile":
+                        if (id >= TileID.Count)
+                            throw new Exception("图格 ID 无效");
+
+                        TShock.TileBans.AddNewBan((short)id);
+                        foreach (var group in allowedGroups)
+                        {
+                            TShock.TileBans.AllowGroup((short)id, group);
+                        }
+                        break;
+
+                    case "item":
+                        if (id >= ItemID.Count)
+                            throw new Exception("物品 ID 无效");
+
+                        string itemName = TShockAPI.Localization.EnglishLanguage.GetItemNameById(id);
+                        if (string.IsNullOrWhiteSpace(itemName))
+                            throw new Exception("物品 ID 无效");
+
+                        if (TShock.ItemBans?.DataModel == null)
+                            throw new Exception("物品封禁数据模型不可用");
+
+                        TShock.ItemBans.DataModel.AddNewBan(itemName);
+                        foreach (var group in allowedGroups)
+                        {
+                            TShock.ItemBans.DataModel.AllowGroup(itemName, group);
+                        }
+                        break;
+
+                    case "proj":
+                        if (id >= ProjectileID.Count)
+                            throw new Exception("弹幕 ID 无效");
+
+                        TShock.ProjectileBans.AddNewBan((short)id);
+                        foreach (var group in allowedGroups)
+                        {
+                            TShock.ProjectileBans.AllowGroup((short)id, group);
+                        }
+                        break;
+
+                    default:
+                        throw new Exception("未知封禁类型");
+                }
+                await _wsService.SendAsync(new
+                {
+                    type = "add_banlist_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = true,
+                        msg = $"已添加/更新 ID: {id}"
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                await _wsService.SendAsync(new
+                {
+                    type = "add_banlist_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = false,
+                        msg = ex.Message
+                    }
+                });
+            }
+        }
+        public async Task HandleRemoveBanlist(PacketEnvelope envelope)
+        {
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var banType = NormalizeBanlistType(jobj["ban_type"]?.ToString());
+            var id = jobj["id"]?.Value<int>() ?? 0;
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(banType))
+                    throw new Exception("封禁类型无效");
+
+                if (id <= 0)
+                    throw new Exception("ID 无效");
+
+                switch (banType)
+                {
+                    case "tile":
+                        TShock.TileBans.RemoveBan((short)id);
+                        break;
+
+                    case "item":
+                        string itemName = TShockAPI.Localization.EnglishLanguage.GetItemNameById(id);
+                        if (string.IsNullOrWhiteSpace(itemName))
+                            throw new Exception("物品 ID 无效");
+                        if (TShock.ItemBans?.DataModel == null)
+                            throw new Exception("物品封禁数据模型不可用");
+                        TShock.ItemBans.DataModel.RemoveBan(itemName);
+                        break;
+
+                    case "proj":
+                        TShock.ProjectileBans.RemoveBan((short)id);
+                        break;
+
+                    default:
+                        throw new Exception("未知封禁类型");
+                }
+
+                await _wsService.SendAsync(new
+                {
+                    type = "remove_banlist_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = true,
+                        msg = $"已移除 ID: {id}"
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                await _wsService.SendAsync(new
+                {
+                    type = "remove_banlist_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = false,
+                        msg = ex.Message
+                    }
+                });
+            }
+        }
+
+        public async Task HandleUpdateBanlistGroups(PacketEnvelope envelope)
+        {
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var banType = NormalizeBanlistType(jobj["ban_type"]?.ToString());
+            var id = jobj["id"]?.Value<int>() ?? 0;
+            var allowedGroups = ParseAllowedGroups(jobj);
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(banType))
+                    throw new Exception("封禁类型无效");
+
+                if (id <= 0)
+                    throw new Exception("ID 无效");
+
+                var invalidGroups = allowedGroups
+                    .Where(g => !TShock.Groups.GroupExists(g))
+                    .ToList();
+                if (invalidGroups.Count > 0)
+                    throw new Exception($"无效组: {string.Join(", ", invalidGroups)}");
+
+                switch (banType)
+                {
+                    case "tile":
+                        if (id >= TileID.Count)
+                            throw new Exception("图格 ID 无效");
+                        TShock.TileBans.RemoveBan((short)id);
+                        TShock.TileBans.AddNewBan((short)id);
+                        foreach (var group in allowedGroups)
+                            TShock.TileBans.AllowGroup((short)id, group);
+                        break;
+
+                    case "item":
+                        if (id >= ItemID.Count)
+                            throw new Exception("物品 ID 无效");
+                        string itemName = TShockAPI.Localization.EnglishLanguage.GetItemNameById(id);
+                        if (string.IsNullOrWhiteSpace(itemName))
+                            throw new Exception("物品 ID 无效");
+                        if (TShock.ItemBans?.DataModel == null)
+                            throw new Exception("物品封禁数据模型不可用");
+
+                        TShock.ItemBans.DataModel.RemoveBan(itemName);
+                        TShock.ItemBans.DataModel.AddNewBan(itemName);
+                        foreach (var group in allowedGroups)
+                            TShock.ItemBans.DataModel.AllowGroup(itemName, group);
+                        break;
+
+                    case "proj":
+                        if (id >= ProjectileID.Count)
+                            throw new Exception("弹幕 ID 无效");
+                        TShock.ProjectileBans.RemoveBan((short)id);
+                        TShock.ProjectileBans.AddNewBan((short)id);
+                        foreach (var group in allowedGroups)
+                            TShock.ProjectileBans.AllowGroup((short)id, group);
+                        break;
+
+                    default:
+                        throw new Exception("未知封禁类型");
+                }
+
+                await _wsService.SendAsync(new
+                {
+                    type = "update_banlist_groups_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = true,
+                        msg = $"已更新 ID: {id} 的允许组"
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                await _wsService.SendAsync(new
+                {
+                    type = "update_banlist_groups_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = false,
+                        msg = ex.Message
+                    }
                 });
             }
         }
@@ -54,16 +431,16 @@ namespace TerrariaManagerAgent.Services.Handlers
                 }
 
                 var allUsers = TShock.UserAccounts.GetUserAccounts();
-                var regMap   = allUsers.ToDictionary(u => u.Name, StringComparer.OrdinalIgnoreCase);
+                var regMap = allUsers.ToDictionary(u => u.Name, StringComparer.OrdinalIgnoreCase);
 
                 // 先列所有当前在线玩家（含未注册账号），再补离线的注册账号
                 var players = new System.Collections.Generic.List<object>();
                 foreach (var n in onlineNames)
                 {
                     regMap.TryGetValue(n, out var acc);
-                    var tsp  = TShock.Players.FirstOrDefault(p => p != null && p.Active &&
+                    var tsp = TShock.Players.FirstOrDefault(p => p != null && p.Active &&
                                    string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase));
-                    var grp  = acc?.Group ?? tsp?.Group?.Name ?? "guest";
+                    var grp = acc?.Group ?? tsp?.Group?.Name ?? "guest";
                     players.Add(new { name = n, group = grp, online = true, user_id = acc?.ID ?? -1 });
                 }
                 foreach (var u in allUsers)
@@ -72,30 +449,32 @@ namespace TerrariaManagerAgent.Services.Handlers
                         players.Add(new { name = u.Name, group = u.Group, online = false, user_id = u.ID });
                 }
 
-                await _wsService.SendAsync(new {
-                    type      = "player_list_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "player_list_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = true, players }
+                    payload = new { ref_id = envelope.MsgId, success = true, players }
                 });
             }
             catch (Exception ex)
             {
-                await _wsService.SendAsync(new {
-                    type      = "player_list_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "player_list_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
                 });
             }
         }
 
         public async Task HandlePlayerAction(PacketEnvelope envelope)
         {
-            var jobj   = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
             var action = jobj["action"]?.ToString() ?? "";
             var player = jobj["player"]?.ToString() ?? "";
-            var group  = jobj["group"]?.ToString()  ?? "";
+            var group = jobj["group"]?.ToString() ?? "";
             var reason = jobj["reason"]?.ToString() ?? "由管理员操作";
             var duration = (jobj["duration"]?.ToString() ?? "").Trim();
 
@@ -128,7 +507,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                 {
                     var online = IsOnlineExact(name);
                     var target = online ? $"tsn:{name}" : $"acc:{name}";
-                    var flags  = online ? string.Empty : " -e";
+                    var flags = online ? string.Empty : " -e";
                     var safeReason = string.IsNullOrWhiteSpace(why) ? "由管理员操作" : why.Trim();
                     var safeDuration = NormalizeDurationOrThrow(dur);
                     if (string.IsNullOrEmpty(safeDuration))
@@ -149,7 +528,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                     if (idx <= 0) return string.Equals(identifier.Trim(), target, StringComparison.OrdinalIgnoreCase);
 
                     var prefix = identifier.Substring(0, idx).Trim().ToLowerInvariant();
-                    var value  = identifier[(idx + 1)..].Trim();
+                    var value = identifier[(idx + 1)..].Trim();
                     // 仅按名称/账号类标识匹配，避免误命中 ip/uuid
                     if (prefix is "acc" or "name" or "n" or "a" or "tsn")
                         return string.Equals(value, target, StringComparison.OrdinalIgnoreCase);
@@ -171,210 +550,213 @@ namespace TerrariaManagerAgent.Services.Handlers
                 switch (action)
                 {
                     case "mute":
-                    {
-                        var online = TShock.Players.FirstOrDefault(
-                            p => p != null && p.Active &&
-                            string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
-                        if (online != null)
                         {
-                            online.mute = true;
-                            msg = $"已禁言玩家 {player}";
+                            var online = TShock.Players.FirstOrDefault(
+                                p => p != null && p.Active &&
+                                string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
+                            if (online != null)
+                            {
+                                online.mute = true;
+                                msg = $"已禁言玩家 {player}";
+                            }
+                            else
+                            {
+                                msg = $"玩家 {player} 当前不在线，禁言仅对在线玩家有效";
+                            }
+                            break;
                         }
-                        else
-                        {
-                            msg = $"玩家 {player} 当前不在线，禁言仅对在线玩家有效";
-                        }
-                        break;
-                    }
                     case "unmute":
-                    {
-                        var online = TShock.Players.FirstOrDefault(
-                            p => p != null && p.Active &&
-                            string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
-                        if (online != null) online.mute = false;
-                        msg = $"已解除禁言 {player}";
-                        break;
-                    }
+                        {
+                            var online = TShock.Players.FirstOrDefault(
+                                p => p != null && p.Active &&
+                                string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
+                            if (online != null) online.mute = false;
+                            msg = $"已解除禁言 {player}";
+                            break;
+                        }
                     case "ban":
-                    {
-                        ExecuteAsServer(BuildBanAddCommand(player, reason, duration));
-                        msg = $"已提交封禁指令：{player}";
-                        break;
-                    }
+                        {
+                            ExecuteAsServer(BuildBanAddCommand(player, reason, duration));
+                            msg = $"已提交封禁指令：{player}";
+                            break;
+                        }
                     case "ban_status":
-                    {
-                        var ticket = ResolveActiveBanTicketByPlayerName(player);
-                        var banned = ticket != null;
-                        msg = banned
-                            ? $"玩家 {player} 当前处于封禁状态 (#{ticket})"
-                            : $"玩家 {player} 当前未被封禁";
-                        await _wsService.SendAsync(new {
-                            type      = "player_action_resp",
-                            msg_id    = Guid.NewGuid().ToString("N"),
-                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                            payload   = new { ref_id = envelope.MsgId, action, success = true, msg, banned, ticket }
-                        });
-                        return;
-                    }
+                        {
+                            var ticket = ResolveActiveBanTicketByPlayerName(player);
+                            var banned = ticket != null;
+                            msg = banned
+                                ? $"玩家 {player} 当前处于封禁状态 (#{ticket})"
+                                : $"玩家 {player} 当前未被封禁";
+                            await _wsService.SendAsync(new
+                            {
+                                type = "player_action_resp",
+                                msg_id = Guid.NewGuid().ToString("N"),
+                                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                                payload = new { ref_id = envelope.MsgId, action, success = true, msg, banned, ticket }
+                            });
+                            return;
+                        }
                     case "unban":
-                    {
-                        int? ticket = null;
-                        if (jobj["ticket"] != null && int.TryParse(jobj["ticket"]!.ToString(), out var tFromPayload))
-                            ticket = tFromPayload;
-                        ticket ??= ResolveActiveBanTicketByPlayerName(player);
-                        if (ticket == null)
-                            throw new Exception($"未找到 {player} 对应的有效封禁 Ticket");
-
-                        ExecuteAsServer($"/ban del {ticket.Value}");
-                        msg = $"已按 Ticket 解封：{player} (#{ticket.Value})";
-                        break;
-                    }
-                    case "setgroup":
-                    {
-                        if (string.IsNullOrEmpty(group)) throw new Exception("必须指定目标组名");
-                        var grp = TShock.Groups.GetGroupByName(group);
-                        if (grp == null) throw new Exception($"组不存在: {group}");
-                        var user = TShock.UserAccounts.GetUserAccountByName(player);
-                        if (user == null) throw new Exception($"未找到玩家: {player}");
-                        TShock.UserAccounts.SetUserGroup(user, group);
-                        msg = $"已将 {player} 的组修改为 {group}";
-                        break;
-                    }
-                    case "kick":
-                    {
-                        var online = TShock.Players.FirstOrDefault(
-                            p => p != null && p.Active &&
-                            string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
-                        if (online == null) throw new Exception($"玩家 {player} 当前不在线");
-                        online.Kick(reason, true);
-                        msg = $"已踢出玩家 {player}";
-                        break;
-                    }
-                    case "give_item":
-                    {
-                        var online = TShock.Players.FirstOrDefault(
-                            p => p != null && p.Active &&
-                            string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
-                        if (online == null) throw new Exception($"玩家 {player} 当前不在线，给予物品仅限在线玩家");
-                        int itemId = jobj["item_id"]?.Value<int>() ?? 0;
-                        int stack  = jobj["stack"]?.Value<int>()   ?? 1;
-                        int prefix = jobj["prefix"]?.Value<int>()  ?? 0;
-                        // 若未提供有效 item_id，尝试按名称查找
-                        if (itemId <= 0)
                         {
-                            var itemNameQuery = jobj["item_name"]?.ToString()?.Trim() ?? "";
-                            if (string.IsNullOrEmpty(itemNameQuery)) throw new Exception("无效的物品 ID 或名称");
-                            for (int i = 1; i < Terraria.ID.ItemID.Count; i++)
-                            {
-                                var it = new Terraria.Item();
-                                it.SetDefaults(i);
-                                if (string.Equals(it.Name, itemNameQuery, StringComparison.OrdinalIgnoreCase))
-                                { itemId = i; break; }
-                            }
-                            if (itemId <= 0) throw new Exception($"未找到物品: {itemNameQuery}");
-                        }
-                        if (stack  <= 0) stack = 1;
-                        online.GiveItem(itemId, stack, prefix);
-                        string itemName = "";
-                        try { var it = new Terraria.Item(); it.SetDefaults(itemId); itemName = it.Name ?? ""; } catch { }
-                        msg = $"已给予 {player} {stack}x {(string.IsNullOrEmpty(itemName) ? $"物品#{itemId}" : itemName)}";
-                        break;
-                    }
-                    case "ban_all":
-                    {
-                        // 封禁指定列表中所有角色
-                        var chars = jobj["chars"] as JArray;
-                        if (chars == null || chars.Count == 0) throw new Exception("未指定角色列表");
-                        var results = new List<string>();
-                        foreach (var c in chars)
-                        {
-                            var name = c.ToString();
-                            if (string.IsNullOrWhiteSpace(name)) continue;
-                            ExecuteAsServer(BuildBanAddCommand(name, reason, duration));
-                            results.Add($"已提交封禁：{name}");
-                        }
-                        msg = string.Join("；", results);
-                        break;
-                    }
-                    case "unban_all":
-                    {
-                        // 解封指定列表中所有角色
-                        var chars = jobj["chars"] as JArray;
-                        if (chars == null || chars.Count == 0) throw new Exception("未指定角色列表");
-                        var results = new List<string>();
-                        foreach (var c in chars)
-                        {
-                            var name = c.ToString();
-                            if (string.IsNullOrWhiteSpace(name)) continue;
-                            var ticket = ResolveActiveBanTicketByPlayerName(name);
+                            int? ticket = null;
+                            if (jobj["ticket"] != null && int.TryParse(jobj["ticket"]!.ToString(), out var tFromPayload))
+                                ticket = tFromPayload;
+                            ticket ??= ResolveActiveBanTicketByPlayerName(player);
                             if (ticket == null)
-                            {
-                                results.Add($"未找到 Ticket：{name}");
-                                continue;
-                            }
+                                throw new Exception($"未找到 {player} 对应的有效封禁 Ticket");
+
                             ExecuteAsServer($"/ban del {ticket.Value}");
-                            results.Add($"已按 Ticket 解封：{name} (#{ticket.Value})");
+                            msg = $"已按 Ticket 解封：{player} (#{ticket.Value})";
+                            break;
                         }
-                        msg = string.Join("；", results);
-                        break;
-                    }
+                    case "setgroup":
+                        {
+                            if (string.IsNullOrEmpty(group)) throw new Exception("必须指定目标组名");
+                            var grp = TShock.Groups.GetGroupByName(group);
+                            if (grp == null) throw new Exception($"组不存在: {group}");
+                            var user = TShock.UserAccounts.GetUserAccountByName(player);
+                            if (user == null) throw new Exception($"未找到玩家: {player}");
+                            TShock.UserAccounts.SetUserGroup(user, group);
+                            msg = $"已将 {player} 的组修改为 {group}";
+                            break;
+                        }
+                    case "kick":
+                        {
+                            var online = TShock.Players.FirstOrDefault(
+                                p => p != null && p.Active &&
+                                string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
+                            if (online == null) throw new Exception($"玩家 {player} 当前不在线");
+                            online.Kick(reason, true);
+                            msg = $"已踢出玩家 {player}";
+                            break;
+                        }
+                    case "give_item":
+                        {
+                            var online = TShock.Players.FirstOrDefault(
+                                p => p != null && p.Active &&
+                                string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
+                            if (online == null) throw new Exception($"玩家 {player} 当前不在线，给予物品仅限在线玩家");
+                            int itemId = jobj["item_id"]?.Value<int>() ?? 0;
+                            int stack = jobj["stack"]?.Value<int>() ?? 1;
+                            int prefix = jobj["prefix"]?.Value<int>() ?? 0;
+                            // 若未提供有效 item_id，尝试按名称查找
+                            if (itemId <= 0)
+                            {
+                                var itemNameQuery = jobj["item_name"]?.ToString()?.Trim() ?? "";
+                                if (string.IsNullOrEmpty(itemNameQuery)) throw new Exception("无效的物品 ID 或名称");
+                                for (int i = 1; i < Terraria.ID.ItemID.Count; i++)
+                                {
+                                    var it = new Terraria.Item();
+                                    it.SetDefaults(i);
+                                    if (string.Equals(it.Name, itemNameQuery, StringComparison.OrdinalIgnoreCase))
+                                    { itemId = i; break; }
+                                }
+                                if (itemId <= 0) throw new Exception($"未找到物品: {itemNameQuery}");
+                            }
+                            if (stack <= 0) stack = 1;
+                            online.GiveItem(itemId, stack, prefix);
+                            string itemName = "";
+                            try { var it = new Terraria.Item(); it.SetDefaults(itemId); itemName = it.Name ?? ""; } catch { }
+                            msg = $"已给予 {player} {stack}x {(string.IsNullOrEmpty(itemName) ? $"物品#{itemId}" : itemName)}";
+                            break;
+                        }
+                    case "ban_all":
+                        {
+                            // 封禁指定列表中所有角色
+                            var chars = jobj["chars"] as JArray;
+                            if (chars == null || chars.Count == 0) throw new Exception("未指定角色列表");
+                            var results = new List<string>();
+                            foreach (var c in chars)
+                            {
+                                var name = c.ToString();
+                                if (string.IsNullOrWhiteSpace(name)) continue;
+                                ExecuteAsServer(BuildBanAddCommand(name, reason, duration));
+                                results.Add($"已提交封禁：{name}");
+                            }
+                            msg = string.Join("；", results);
+                            break;
+                        }
+                    case "unban_all":
+                        {
+                            // 解封指定列表中所有角色
+                            var chars = jobj["chars"] as JArray;
+                            if (chars == null || chars.Count == 0) throw new Exception("未指定角色列表");
+                            var results = new List<string>();
+                            foreach (var c in chars)
+                            {
+                                var name = c.ToString();
+                                if (string.IsNullOrWhiteSpace(name)) continue;
+                                var ticket = ResolveActiveBanTicketByPlayerName(name);
+                                if (ticket == null)
+                                {
+                                    results.Add($"未找到 Ticket：{name}");
+                                    continue;
+                                }
+                                ExecuteAsServer($"/ban del {ticket.Value}");
+                                results.Add($"已按 Ticket 解封：{name} (#{ticket.Value})");
+                            }
+                            msg = string.Join("；", results);
+                            break;
+                        }
                     case "set_stats":
-                    {
-                        // 修改玩家 SSC 基础属性（需要 SSC 开启）
-                        if (!Main.ServerSideCharacter) throw new Exception("服务器未启用 SSC，无法修改属性");
-                        var account = TShock.UserAccounts.GetUserAccountByName(player);
-                        if (account == null) throw new Exception($"未找到玩家账号: {player}");
-                        int maxHp   = jobj["max_hp"]?.Value<int>()   ?? 0;
-                        int maxMana = jobj["max_mana"]?.Value<int>() ?? 0;
-                        if (maxHp <= 0 && maxMana <= 0) throw new Exception("必须指定 max_hp 或 max_mana");
-                        var data = TShock.CharacterDB.GetPlayerData(new TSPlayer(-1), account.ID);
-                        if (data == null) throw new Exception($"玩家 {player} 无 SSC 数据");
-                        if (maxHp   > 0) data.maxHealth = Math.Min(maxHp,   500);
-                        if (maxMana > 0) data.maxMana   = Math.Min(maxMana, 200);
-                        // 若在线则同步内存并写库
-                        var onlineP = TShock.Players.FirstOrDefault(
-                            p => p != null && p.Active &&
-                            string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
-                        if (onlineP != null)
                         {
-                            onlineP.TPlayer.statLifeMax = data.maxHealth;
-                            onlineP.TPlayer.statManaMax = data.maxMana;
-                            TShock.CharacterDB.InsertPlayerData(onlineP, true);
+                            // 修改玩家 SSC 基础属性（需要 SSC 开启）
+                            if (!Main.ServerSideCharacter) throw new Exception("服务器未启用 SSC，无法修改属性");
+                            var account = TShock.UserAccounts.GetUserAccountByName(player);
+                            if (account == null) throw new Exception($"未找到玩家账号: {player}");
+                            int maxHp = jobj["max_hp"]?.Value<int>() ?? 0;
+                            int maxMana = jobj["max_mana"]?.Value<int>() ?? 0;
+                            if (maxHp <= 0 && maxMana <= 0) throw new Exception("必须指定 max_hp 或 max_mana");
+                            var data = TShock.CharacterDB.GetPlayerData(new TSPlayer(-1), account.ID);
+                            if (data == null) throw new Exception($"玩家 {player} 无 SSC 数据");
+                            if (maxHp > 0) data.maxHealth = Math.Min(maxHp, 500);
+                            if (maxMana > 0) data.maxMana = Math.Min(maxMana, 200);
+                            // 若在线则同步内存并写库
+                            var onlineP = TShock.Players.FirstOrDefault(
+                                p => p != null && p.Active &&
+                                string.Equals(p.Name, player, StringComparison.OrdinalIgnoreCase));
+                            if (onlineP != null)
+                            {
+                                onlineP.TPlayer.statLifeMax = data.maxHealth;
+                                onlineP.TPlayer.statManaMax = data.maxMana;
+                                TShock.CharacterDB.InsertPlayerData(onlineP, true);
+                            }
+                            else
+                            {
+                                // 离线：直接更新数据库行
+                                var dbPath = Path.Combine(TShock.SavePath, "tshock.sqlite");
+                                using var conn2 = new SqliteConnection($"Data Source={dbPath}");
+                                conn2.Open();
+                                using var cmd2 = conn2.CreateCommand();
+                                cmd2.CommandText = "UPDATE tsCharacter SET MaxHealth=@mh,MaxMana=@mm WHERE Account=@id";
+                                cmd2.Parameters.AddWithValue("@mh", data.maxHealth);
+                                cmd2.Parameters.AddWithValue("@mm", data.maxMana);
+                                cmd2.Parameters.AddWithValue("@id", account.ID);
+                                cmd2.ExecuteNonQuery();
+                            }
+                            msg = $"已更新 {player} 的属性（血量上限 {data.maxHealth}，魔力上限 {data.maxMana}）";
+                            break;
                         }
-                        else
-                        {
-                            // 离线：直接更新数据库行
-                            var dbPath = Path.Combine(TShock.SavePath, "tshock.sqlite");
-                            using var conn2 = new SqliteConnection($"Data Source={dbPath}");
-                            conn2.Open();
-                            using var cmd2 = conn2.CreateCommand();
-                            cmd2.CommandText = "UPDATE tsCharacter SET MaxHealth=@mh,MaxMana=@mm WHERE Account=@id";
-                            cmd2.Parameters.AddWithValue("@mh", data.maxHealth);
-                            cmd2.Parameters.AddWithValue("@mm", data.maxMana);
-                            cmd2.Parameters.AddWithValue("@id", account.ID);
-                            cmd2.ExecuteNonQuery();
-                        }
-                        msg = $"已更新 {player} 的属性（血量上限 {data.maxHealth}，魔力上限 {data.maxMana}）";
-                        break;
-                    }
                     default:
                         throw new Exception($"未知操作: {action}");
                 }
 
-                await _wsService.SendAsync(new {
-                    type      = "player_action_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "player_action_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, action, success = true, msg }
+                    payload = new { ref_id = envelope.MsgId, action, success = true, msg }
                 });
             }
             catch (Exception ex)
             {
-                await _wsService.SendAsync(new {
-                    type      = "player_action_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "player_action_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, action, success = false, msg = ex.Message }
+                    payload = new { ref_id = envelope.MsgId, action, success = false, msg = ex.Message }
                 });
             }
         }
@@ -384,20 +766,22 @@ namespace TerrariaManagerAgent.Services.Handlers
             try
             {
                 var groups = TShock.Groups.groups.Select(g => g.Name).OrderBy(n => n).ToList();
-                await _wsService.SendAsync(new {
-                    type      = "get_groups_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "get_groups_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = true, groups }
+                    payload = new { ref_id = envelope.MsgId, success = true, groups }
                 });
             }
             catch (Exception ex)
             {
-                await _wsService.SendAsync(new {
-                    type      = "get_groups_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "get_groups_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = ex.Message, groups = new string[0] }
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message, groups = new string[0] }
                 });
             }
         }
@@ -1006,8 +1390,8 @@ namespace TerrariaManagerAgent.Services.Handlers
                             throw new Exception($"父组不存在: {parent}");
                     }
 
-                    var color = string.IsNullOrWhiteSpace(chatColor) 
-                        ? (chatColorObj?.ToString() ?? "255,255,255") 
+                    var color = string.IsNullOrWhiteSpace(chatColor)
+                        ? (chatColorObj?.ToString() ?? "255,255,255")
                         : chatColor;
 
                     using var upd = conn.CreateCommand();
@@ -1141,19 +1525,26 @@ namespace TerrariaManagerAgent.Services.Handlers
 
         public async Task HandleRegisterUser(PacketEnvelope envelope)
         {
-            var jobj       = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
-            var username   = jobj["username"]?.ToString()         ?? "";
-            var password   = jobj["password"]?.ToString()         ?? "";
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var username = jobj["username"]?.ToString() ?? "";
+            var password = jobj["password"]?.ToString() ?? "";
             var panelEmail = jobj["panel_user_email"]?.ToString() ?? "";
 
             if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
             {
-                await _wsService.SendAsync(new {
-                    type      = "register_user_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "register_user_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = "用户名或密码不能为空",
-                                      panel_user_email = panelEmail, username }
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = false,
+                        msg = "用户名或密码不能为空",
+                        panel_user_email = panelEmail,
+                        username
+                    }
                 });
                 return;
             }
@@ -1164,45 +1555,59 @@ namespace TerrariaManagerAgent.Services.Handlers
                     throw new Exception($"用户名 \"{username}\" 已存在");
 
                 var account = new TShockAPI.DB.UserAccount();
-                account.Name  = username;
+                account.Name = username;
                 account.Group = "default";
                 account.CreateBCryptHash(password);
                 TShock.UserAccounts.AddUserAccount(account);
 
-                await _wsService.SendAsync(new {
-                    type      = "register_user_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "register_user_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = true,
-                                      msg = $"角色 {username} 注册成功",
-                                      panel_user_email = panelEmail, username }
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = true,
+                        msg = $"角色 {username} 注册成功",
+                        panel_user_email = panelEmail,
+                        username
+                    }
                 });
             }
             catch (Exception ex)
             {
-                await _wsService.SendAsync(new {
-                    type      = "register_user_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "register_user_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = ex.Message,
-                                      panel_user_email = panelEmail, username }
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = false,
+                        msg = ex.Message,
+                        panel_user_email = panelEmail,
+                        username
+                    }
                 });
             }
         }
 
         public async Task HandleDeleteUser(PacketEnvelope envelope)
         {
-            var jobj          = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
-            var username      = jobj["username"]?.ToString()       ?? "";
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var username = jobj["username"]?.ToString() ?? "";
             var operatorEmail = jobj["operator_email"]?.ToString() ?? "unknown";
 
             if (string.IsNullOrWhiteSpace(username))
             {
-                await _wsService.SendAsync(new {
-                    type      = "delete_user_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "delete_user_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = "用户名不能为空", username }
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = "用户名不能为空", username }
                 });
                 return;
             }
@@ -1218,34 +1623,41 @@ namespace TerrariaManagerAgent.Services.Handlers
                 string logEntry = $"[面板操作] 角色删除 — 账号: {username}, 操作者: {operatorEmail}, 时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
                 TShock.Log.Info(logEntry);
 
-                await _wsService.SendAsync(new {
-                    type      = "delete_user_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "delete_user_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = true,
-                                      msg = $"角色 {username} 已删除",
-                                      username, operator_email = operatorEmail }
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = true,
+                        msg = $"角色 {username} 已删除",
+                        username,
+                        operator_email = operatorEmail
+                    }
                 });
             }
             catch (Exception ex)
             {
-                await _wsService.SendAsync(new {
-                    type      = "delete_user_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "delete_user_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = ex.Message, username }
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message, username }
                 });
             }
         }
 
         public async Task HandleChangePassword(PacketEnvelope envelope)
         {
-            var jobj        = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
-            var username    = jobj["username"]?.ToString()     ?? "";
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var username = jobj["username"]?.ToString() ?? "";
             var newPassword = jobj["new_password"]?.ToString() ?? "";
 
             bool success = false;
-            string msg   = "";
+            string msg = "";
             try
             {
                 if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(newPassword))
@@ -1257,31 +1669,34 @@ namespace TerrariaManagerAgent.Services.Handlers
 
                 TShock.UserAccounts.SetUserAccountPassword(account, newPassword);
                 success = true;
-                msg     = $"账号 {username} 密码已更新";
+                msg = $"账号 {username} 密码已更新";
             }
             catch (Exception ex)
             {
                 msg = ex.Message;
             }
 
-            await _wsService.SendAsync(new {
-                type      = "change_password_resp",
-                msg_id    = Guid.NewGuid().ToString("N"),
+            await _wsService.SendAsync(new
+            {
+                type = "change_password_resp",
+                msg_id = Guid.NewGuid().ToString("N"),
                 timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                payload   = new { ref_id = envelope.MsgId, success, msg, username }
+                payload = new { ref_id = envelope.MsgId, success, msg, username }
             });
         }
 
         public async Task HandleSendBindCode(PacketEnvelope envelope)
         {
-            var jobj     = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
             var username = jobj["username"]?.ToString() ?? "";
-            var code     = jobj["code"]?.ToString()     ?? "";
+            var code = jobj["code"]?.ToString() ?? "";
 
             if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(code))
             {
-                await _wsService.SendAsync(new {
-                    type = "send_bind_code_resp", msg_id = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "send_bind_code_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                     payload = new { ref_id = envelope.MsgId, success = false, msg = "参数不完整" }
                 });
@@ -1310,34 +1725,48 @@ namespace TerrariaManagerAgent.Services.Handlers
                     ? $"角色 {username} 已在线，但尚未登录账号；必须该角色在线且完成登录后才能发送验证码"
                     : $"角色 {username} 当前不在线；必须该角色在线且完成登录后才能发送验证码";
 
-                await _wsService.SendAsync(new {
-                    type = "send_bind_code_resp", msg_id = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "send_bind_code_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload = new { ref_id = envelope.MsgId, success = false,
-                        msg = failMsg }
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = false,
+                        msg = failMsg
+                    }
                 });
                 return;
             }
 
             target.SendInfoMessage($"[面板绑定] 您的绑定验证码为: {code}，有效期10分钟。请在面板中输入此验证码完成绑定。");
 
-            await _wsService.SendAsync(new {
-                type = "send_bind_code_resp", msg_id = Guid.NewGuid().ToString("N"),
+            await _wsService.SendAsync(new
+            {
+                type = "send_bind_code_resp",
+                msg_id = Guid.NewGuid().ToString("N"),
                 timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                payload = new { ref_id = envelope.MsgId, success = true,
-                    msg = $"验证码已发送给玩家 {username}" }
+                payload = new
+                {
+                    ref_id = envelope.MsgId,
+                    success = true,
+                    msg = $"验证码已发送给玩家 {username}"
+                }
             });
         }
 
         public async Task HandleGetCharInfo(PacketEnvelope envelope)
         {
-            var jobj     = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
             var username = jobj["username"]?.ToString() ?? "";
 
             if (string.IsNullOrWhiteSpace(username))
             {
-                await _wsService.SendAsync(new {
-                    type = "get_char_info_resp", msg_id = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "get_char_info_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                     payload = new { ref_id = envelope.MsgId, success = false, msg = "用户名不能为空" }
                 });
@@ -1346,12 +1775,12 @@ namespace TerrariaManagerAgent.Services.Handlers
 
             try
             {
-                var account  = TShock.UserAccounts.GetUserAccountByName(username);
+                var account = TShock.UserAccounts.GetUserAccountByName(username);
                 string group = account?.Group ?? "guest";
-                bool exists  = account != null;
+                bool exists = account != null;
 
                 var inventoryItems = new List<object>();
-                bool hasSscData    = false;
+                bool hasSscData = false;
 
                 if (Main.ServerSideCharacter && account != null)
                 {
@@ -1368,7 +1797,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                             using var reader = cmd.ExecuteReader();
                             if (reader.Read() && !reader.IsDBNull(0))
                             {
-                                hasSscData     = true;
+                                hasSscData = true;
                                 inventoryItems = ParseTShockInventory(reader.GetString(0));
                             }
                         }
@@ -1376,25 +1805,30 @@ namespace TerrariaManagerAgent.Services.Handlers
                     catch { /* SSC 数据不存在时静默忽略 */ }
                 }
 
-                await _wsService.SendAsync(new {
-                    type = "get_char_info_resp", msg_id = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "get_char_info_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload = new {
-                        ref_id       = envelope.MsgId,
-                        success      = true,
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = true,
                         username,
                         group,
-                        user_exists  = exists,
-                        ssc_enabled  = Main.ServerSideCharacter,
+                        user_exists = exists,
+                        ssc_enabled = Main.ServerSideCharacter,
                         has_ssc_data = hasSscData,
-                        inventory    = inventoryItems,
+                        inventory = inventoryItems,
                     }
                 });
             }
             catch (Exception ex)
             {
-                await _wsService.SendAsync(new {
-                    type = "get_char_info_resp", msg_id = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "get_char_info_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                     payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
                 });
@@ -1409,10 +1843,10 @@ namespace TerrariaManagerAgent.Services.Handlers
             int idx = 0;
             foreach (var part in raw.Split('~'))
             {
-                var p      = part.Split(',');
-                int netId  = p.Length > 0 && int.TryParse(p[0].Trim(), out var n)  ? n  : 0;
+                var p = part.Split(',');
+                int netId = p.Length > 0 && int.TryParse(p[0].Trim(), out var n) ? n : 0;
                 int prefix = p.Length > 1 && int.TryParse(p[1].Trim(), out var pr) ? pr : 0;
-                int stack  = p.Length > 2 && int.TryParse(p[2].Trim(), out var s)  ? s  : 0;
+                int stack = p.Length > 2 && int.TryParse(p[2].Trim(), out var s) ? s : 0;
                 int favorite = p.Length > 3 && int.TryParse(p[3].Trim(), out var f) ? (f != 0 ? 1 : 0) : 0;
                 string name = "", prefixName = "";
                 if (netId != 0)
@@ -1431,7 +1865,7 @@ namespace TerrariaManagerAgent.Services.Handlers
 
         public async Task HandleGetInventory(PacketEnvelope envelope)
         {
-            var jobj     = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
             var username = jobj["username"]?.ToString() ?? "";
             try
             {
@@ -1449,13 +1883,13 @@ namespace TerrariaManagerAgent.Services.Handlers
 
                 if (onlineTsp != null)
                 {
-                    isOnline  = true;
-                    var tp    = onlineTsp.TPlayer;
-                    health    = tp.statLife;
+                    isOnline = true;
+                    var tp = onlineTsp.TPlayer;
+                    health = tp.statLife;
                     maxHealth = tp.statLifeMax;
-                    mana      = tp.statMana;
-                    maxMana   = tp.statManaMax;
-                    slots     = BuildSlotsFromTPlayer(tp);
+                    mana = tp.statMana;
+                    maxMana = tp.statManaMax;
+                    slots = BuildSlotsFromTPlayer(tp);
                 }
                 else
                 {
@@ -1468,34 +1902,41 @@ namespace TerrariaManagerAgent.Services.Handlers
                     if (data == null || data.inventory == null || data.inventory.Length == 0)
                         throw new Exception($"玩家 {username} 无角色数据（从未以 SSC 模式登录过，或服务器未启用 SSC）");
 
-                    health    = data.health;
+                    health = data.health;
                     maxHealth = data.maxHealth;
-                    mana      = data.mana;
-                    maxMana   = data.maxMana;
-                    slots     = BuildSlotsFromPlayerData(data);
+                    mana = data.mana;
+                    maxMana = data.maxMana;
+                    slots = BuildSlotsFromPlayerData(data);
                 }
 
-                await _wsService.SendAsync(new {
-                    type      = "get_inventory_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "get_inventory_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new {
-                        ref_id = envelope.MsgId, success = true,
-                        username, is_online = isOnline,
+                    payload = new
+                    {
+                        ref_id = envelope.MsgId,
+                        success = true,
+                        username,
+                        is_online = isOnline,
                         ssc_enabled = Main.ServerSideCharacter,
-                        health, max_health = maxHealth,
-                        mana,   max_mana   = maxMana,
+                        health,
+                        max_health = maxHealth,
+                        mana,
+                        max_mana = maxMana,
                         slots
                     }
                 });
             }
             catch (Exception ex)
             {
-                await _wsService.SendAsync(new {
-                    type      = "get_inventory_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "get_inventory_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
                 });
             }
         }
@@ -1539,7 +1980,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                 slots.Add(TerrariaItemToSlot(94 + i, i < tp.miscDyes.Length ? tp.miscDyes[i] : null));
             // 99-138: piggy bank (bank.item[0..39])
             for (int i = 0; i < 40; i++)
-                slots.Add(TerrariaItemToSlot(99  + i, i < tp.bank.item.Length  ? tp.bank.item[i]  : null));
+                slots.Add(TerrariaItemToSlot(99 + i, i < tp.bank.item.Length ? tp.bank.item[i] : null));
             // 139-178: safe (bank2.item[0..39])
             for (int i = 0; i < 40; i++)
                 slots.Add(TerrariaItemToSlot(139 + i, i < tp.bank2.item.Length ? tp.bank2.item[i] : null));
@@ -1558,11 +1999,11 @@ namespace TerrariaManagerAgent.Services.Handlers
                 for (int l = 0; l < Math.Min(tp.Loadouts.Length, 3); l++)
                 {
                     var lo = tp.Loadouts[l];
-                    // armor: 20 slots
+                    // 护甲栏：20 个槽位
                     for (int i = 0; i < 20; i++)
                         slots.Add(TerrariaItemToSlot(lBase + i, lo?.Armor != null && i < lo.Armor.Length ? lo.Armor[i] : null));
                     lBase += 20;
-                    // dye: 10 slots
+                    // 染料栏：10 个槽位
                     for (int i = 0; i < 10; i++)
                         slots.Add(TerrariaItemToSlot(lBase + i, lo?.Dye != null && i < lo.Dye.Length ? lo.Dye[i] : null));
                     lBase += 10;
@@ -1811,7 +2252,7 @@ namespace TerrariaManagerAgent.Services.Handlers
             var slots = new List<object>(data.inventory.Length);
             for (int i = 0; i < data.inventory.Length; i++)
             {
-                var ni    = data.inventory[i];
+                var ni = data.inventory[i];
                 int netId = ni.NetId, pfx = ni.PrefixId, stk = ni.Stack;
                 string name = "", prefixName = "";
                 if (netId != 0)
@@ -1829,13 +2270,13 @@ namespace TerrariaManagerAgent.Services.Handlers
 
         public async Task HandleSaveInventory(PacketEnvelope envelope)
         {
-            var jobj     = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
             var username = jobj["username"]?.ToString() ?? "";
             var slotsArr = jobj["slots"] as JArray;
             var maxHpTok = jobj["max_hp"];
             var maxManaTok = jobj["max_mana"];
-                // 永久加强物品字段
-                var enhanceFields = new Dictionary<string, JToken> {
+            // 永久加强物品字段
+            var enhanceFields = new Dictionary<string, JToken> {
                     {"extraSlot", jobj["extraSlot"]},
                     {"unlockedBiomeTorches", jobj["unlockedBiomeTorches"]},
                     {"ateArtisanBread", jobj["ateArtisanBread"]},
@@ -1912,11 +2353,11 @@ namespace TerrariaManagerAgent.Services.Handlers
                 // 3. 将前端传入的格子合并覆盖（只覆盖有改动的格子，不影响其他格子）
                 foreach (var s in slotsArr)
                 {
-                    int idx    = s["index"]?.Value<int>() ?? -1;
+                    int idx = s["index"]?.Value<int>() ?? -1;
                     if (idx < 0 || idx >= totalSlots) continue;
-                    int netId  = s["net_id"]?.Value<int>() ?? 0;
+                    int netId = s["net_id"]?.Value<int>() ?? 0;
                     int prefix = s["prefix"]?.Value<int>() ?? 0;
-                    int stack  = s["stack"]?.Value<int>() ?? 0;
+                    int stack = s["stack"]?.Value<int>() ?? 0;
                     int favorite = s["favorite"]?.Value<int>() ?? 0;
                     if (netId < 0) netId = 0;
                     if (prefix < 0 || prefix > 83) prefix = 0;
@@ -2069,20 +2510,22 @@ namespace TerrariaManagerAgent.Services.Handlers
                         ? $"已保存 {username} 的背包，并已执行 /reload"
                         : $"已保存 {username} 的背包（/reload 执行失败）");
 
-                await _wsService.SendAsync(new {
-                    type      = "save_inventory_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "save_inventory_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = true, msg, is_online = isOnline }
+                    payload = new { ref_id = envelope.MsgId, success = true, msg, is_online = isOnline }
                 });
             }
             catch (Exception ex)
             {
-                await _wsService.SendAsync(new {
-                    type      = "save_inventory_resp",
-                    msg_id    = Guid.NewGuid().ToString("N"),
+                await _wsService.SendAsync(new
+                {
+                    type = "save_inventory_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    payload   = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
                 });
             }
         }
@@ -2103,7 +2546,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                     if (p0.Length < 3) continue;
                     if (!int.TryParse(p0[1].Trim(), out int b)) continue;
                     if (!int.TryParse(p0[2].Trim(), out int c)) continue;
-                    // prefix 通常 0-83，stack 常明显更大
+                    // 前缀值通常在 0-83，堆叠数通常明显更大
                     if (b > 83 && c <= 83) scoreNsp++;
                     if (c > 83 && b <= 83) scoreNps++;
                 }
@@ -2126,13 +2569,13 @@ namespace TerrariaManagerAgent.Services.Handlers
                     if (p.Length >= 4)
                     {
                         // 固定四段：id,stack,prefix,favorite
-                        stack  = v1;
+                        stack = v1;
                         prefix = v2;
                         if (int.TryParse(p[3].Trim(), out int fv)) favorite = fv != 0 ? 1 : 0;
                     }
                     else
                     {
-                        stack  = maybeNetStackPrefix ? v1 : v2;
+                        stack = maybeNetStackPrefix ? v1 : v2;
                         prefix = maybeNetStackPrefix ? v2 : v1;
                     }
                     string itemName = "", prefixName = "";

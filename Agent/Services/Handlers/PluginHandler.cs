@@ -10,6 +10,7 @@ using Terraria;
 using TerrariaApi.Server;
 using TShockAPI;
 using TerrariaManagerAgent.Models;
+using TerrariaManagerAgent.Services.ApmCompat;
 
 namespace TerrariaManagerAgent.Services.Handlers
 {
@@ -339,6 +340,25 @@ namespace TerrariaManagerAgent.Services.Handlers
 
                 string? mdPath  = null;
                 var baseName    = Path.GetFileNameWithoutExtension(info.Name);
+                var strippedBase = System.Text.RegularExpressions.Regex.Replace(baseName,
+                    @"\.[a-z]{2,3}(-[A-Za-z]{2,4})?$", "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                var candidates = new List<string> { baseName };
+                if (!string.Equals(strippedBase, baseName, StringComparison.OrdinalIgnoreCase))
+                    candidates.Add(strippedBase);
+
+                string? matchedAssembly = null;
+                foreach (var c in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (File.Exists(Path.Combine(pluginsDir, c + ".dll")) ||
+                        File.Exists(Path.Combine(pluginsDir, c + ".dll.disabled")))
+                    {
+                        matchedAssembly = c;
+                        break;
+                    }
+                }
+
                 var exactMd     = Path.Combine(pluginsDir, baseName + ".md");
                 if (File.Exists(exactMd))
                 {
@@ -346,9 +366,6 @@ namespace TerrariaManagerAgent.Services.Handlers
                 }
                 else
                 {
-                    var strippedBase = System.Text.RegularExpressions.Regex.Replace(baseName,
-                        @"\.[a-z]{2,3}(-[A-Za-z]{2,4})?$", "",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     if (strippedBase != baseName)
                     {
                         var strippedMd = Path.Combine(pluginsDir, strippedBase + ".md");
@@ -356,12 +373,16 @@ namespace TerrariaManagerAgent.Services.Handlers
                     }
                 }
 
+                var isPluginLibrary = matchedAssembly != null || mdPath != null;
+
                 files.Add(new
                 {
                     name      = info.Name,
                     full_path = info.FullName,
                     size      = info.Length,
                     modified  = info.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                    assembly_name = (object?)matchedAssembly,
+                    is_plugin_library = isPluginLibrary,
                     md_path   = (object?)mdPath,
                 });
             }
@@ -390,7 +411,7 @@ namespace TerrariaManagerAgent.Services.Handlers
         public async Task HandlePluginInstall(PacketEnvelope envelope)
         {
             var jobj         = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
-            var assemblyName = jobj["assembly_name"]?.ToString() ?? "";
+            var assemblyName = ApmDependencyResolver.NormalizeAssemblyName(jobj["assembly_name"]?.ToString() ?? "");
             if (string.IsNullOrWhiteSpace(assemblyName))
             {
                 await _wsService.SendAsync(new {
@@ -407,13 +428,92 @@ namespace TerrariaManagerAgent.Services.Handlers
 
             try
             {
-                var zipBytes = await _httpClient.GetByteArrayAsync(
-                    $"http://api.terraria.ink:11434/plugin/get_plugin_zip?assembly_name={Uri.EscapeDataString(assemblyName)}&tshock_version={tshockVer}");
+                var resolver = new ApmDependencyResolver(_httpClient);
+                var (dependencyOrder, unresolvedDeps) = await resolver.ResolveDependencyOrderAsync(assemblyName, TShock.VersionNum.ToString());
 
-                var fileMap    = await ExtractZip(zipBytes);
-                if (fileMap.Count == 0) throw new Exception("压缩包为空或无法读取");
+                var installOrder = dependencyOrder
+                    .Append(assemblyName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
-                var writtenDlls = await WriteFilesToPluginsDir(fileMap, pluginsDir);
+                var allWrittenDlls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var installedPackages = new List<string>();
+                var skippedDependencies = new List<string>();
+                var fallbackInstalledDependencies = new List<string>();
+                Dictionary<string, byte[]>? allPluginsMap = null;
+
+                async Task<bool> TryInstallFromAllPluginsAsync(string asmToInstall)
+                {
+                    try
+                    {
+                        allPluginsMap ??= await ExtractZip(await _httpClient.GetByteArrayAsync(
+                            $"http://api.terraria.ink:11434/plugin/get_all_plugins?tshock_version={tshockVer}"));
+
+                        var dllFile = asmToInstall + ".dll";
+                        var pdbFile = asmToInstall + ".pdb";
+                        var mdFile = asmToInstall + ".md";
+
+                        var subset = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var (fname, fdata) in allPluginsMap)
+                        {
+                            var onlyName = Path.GetFileName(fname);
+                            if (string.Equals(onlyName, dllFile, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(onlyName, pdbFile, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(onlyName, mdFile, StringComparison.OrdinalIgnoreCase))
+                            {
+                                subset[onlyName] = fdata;
+                            }
+                        }
+
+                        if (!subset.ContainsKey(dllFile)) return false;
+
+                        var written = await WriteFilesToPluginsDir(subset, pluginsDir);
+                        foreach (var w in written) allWrittenDlls.Add(w);
+                        installedPackages.Add(asmToInstall);
+                        return true;
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                }
+
+                foreach (var asmToInstall in installOrder)
+                {
+                    byte[] zipBytes;
+                    try
+                    {
+                        zipBytes = await _httpClient.GetByteArrayAsync(
+                            $"http://api.terraria.ink:11434/plugin/get_plugin_zip?assembly_name={Uri.EscapeDataString(asmToInstall)}&tshock_version={tshockVer}");
+                    }
+                    catch (System.Net.Http.HttpRequestException hex)
+                    {
+                        var isRoot = string.Equals(asmToInstall, assemblyName, StringComparison.OrdinalIgnoreCase);
+                        if (hex.StatusCode != System.Net.HttpStatusCode.NotFound)
+                            throw;
+
+                        // APM 式回退：尝试从 /plugin/get_all_plugins 缓存包中解析并安装。
+                        if (await TryInstallFromAllPluginsAsync(asmToInstall))
+                        {
+                            fallbackInstalledDependencies.Add(asmToInstall);
+                            TShock.Log.ConsoleInfo($"[Agent] {asmToInstall} 从 get_all_plugins 回退安装成功");
+                            continue;
+                        }
+
+                        if (isRoot) throw;
+
+                        skippedDependencies.Add($"{asmToInstall}(404)");
+                        TShock.Log.ConsoleInfo($"[Agent] 依赖 {asmToInstall} 下载 404，已跳过");
+                        continue;
+                    }
+
+                    var fileMap = await ExtractZip(zipBytes);
+                    if (fileMap.Count == 0) throw new Exception($"插件 {asmToInstall} 压缩包为空或无法读取");
+
+                    var written = await WriteFilesToPluginsDir(fileMap, pluginsDir);
+                    foreach (var w in written) allWrittenDlls.Add(w);
+                    installedPackages.Add(asmToInstall);
+                }
 
                 var (loadedAsms, gameObj, pluginList) = GetServerApiInternals();
                 var hotReloaded = new List<string>();
@@ -421,19 +521,40 @@ namespace TerrariaManagerAgent.Services.Handlers
 
                 if (loadedAsms != null && gameObj != null && pluginList != null)
                 {
-                    foreach (var asmName in writtenDlls)
+                    foreach (var asmName in allWrittenDlls)
                         await HotLoadAssembly(asmName, pluginsDir, loadedAsms, gameObj, pluginList, hotReloaded, hotFailed);
                 }
 
                 var hotMsg = hotReloaded.Any() ? $"热重载: {string.Join("、", hotReloaded)}" : "已写入，重启后生效";
                 if (hotFailed.Any()) hotMsg += $"；失败: {string.Join("、", hotFailed)}";
+                var depMsg = dependencyOrder.Count > 0
+                    ? $"；依赖: {string.Join("、", dependencyOrder)}"
+                    : "";
+                var unresolvedMsg = unresolvedDeps.Count > 0
+                    ? $"；未在云端找到的依赖: {string.Join("、", unresolvedDeps)}"
+                    : "";
+                var skippedMsg = skippedDependencies.Count > 0
+                    ? $"；跳过依赖下载: {string.Join("、", skippedDependencies)}"
+                    : "";
+                var fallbackMsg = fallbackInstalledDependencies.Count > 0
+                    ? $"；全量包回退安装: {string.Join("、", fallbackInstalledDependencies)}"
+                    : "";
 
                 await _wsService.SendAsync(new {
                     type = "plugin_install_resp", msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                     payload = new { ref_id = envelope.MsgId, success = true,
-                        assembly_name = assemblyName, written = writtenDlls,
-                        hot_reloaded = hotReloaded, msg = $"已安装 {assemblyName}。{hotMsg}" }
+                        assembly_name = assemblyName,
+                        dependencies = dependencyOrder,
+                        downloadable_dependencies = dependencyOrder,
+                        unresolved_dependencies = unresolvedDeps,
+                        skipped_dependencies = skippedDependencies,
+                        fallback_installed_dependencies = fallbackInstalledDependencies,
+                        install_order = installOrder,
+                        installed_packages = installedPackages,
+                        written = allWrittenDlls.ToList(),
+                        hot_reloaded = hotReloaded,
+                        msg = $"已安装 {assemblyName}{depMsg}{unresolvedMsg}{skippedMsg}{fallbackMsg}。{hotMsg}" }
                 });
             }
             catch (Exception ex)

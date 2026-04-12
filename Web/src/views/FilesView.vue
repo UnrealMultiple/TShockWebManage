@@ -944,9 +944,9 @@ function shortDir(dir) {
 }
 
 // ── 插件操作（功能暂留空）──
-function enablePlugin(_f)     { /* TODO */ }
-function disablePlugin(_f)    { /* TODO */ }
-function editPluginConfig(_f) { /* TODO */ }
+function enablePlugin(_f)     { /* 待实现 */ }
+function disablePlugin(_f)    { /* 待实现 */ }
+function editPluginConfig(_f) { /* 待实现 */ }
 
 // ── 通用文件管理 ──
 function editFile(f) {

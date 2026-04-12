@@ -35,11 +35,15 @@ def _run_migrations():
                 server_id   INTEGER NOT NULL,
                 name        TEXT    NOT NULL,
                 description TEXT,
+                parent_group_id INTEGER,
                 is_builtin  INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(server_id, name),
                 FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
             )
         """)
+        spg_cols = {row[1] for row in conn.execute("PRAGMA table_info(server_panel_groups)")}
+        if "parent_group_id" not in spg_cols:
+            conn.execute("ALTER TABLE server_panel_groups ADD COLUMN parent_group_id INTEGER")
         # 面板权限组的权限列表
         conn.execute("""
             CREATE TABLE IF NOT EXISTS server_panel_group_perms (

@@ -138,11 +138,7 @@ def _has_panel_perm(server_id: int, user_id: int, permission: str) -> bool:
         ).fetchone()
         if not pg_row:
             return False
-        perms = conn.execute(
-            "SELECT permission FROM server_panel_group_perms WHERE group_id=?",
-            (pg_row[0],),
-        ).fetchall()
-        for (p,) in perms:
+        for p in _collect_panel_group_permissions(conn, server_id, pg_row[0]):
             if p == '*' or p == permission:
                 return True
             if p.endswith('.*'):
@@ -150,6 +146,47 @@ def _has_panel_perm(server_id: int, user_id: int, permission: str) -> bool:
                 if permission == prefix or permission.startswith(prefix + '.'):
                     return True
         return False
+
+
+def _collect_panel_group_permissions(conn: sqlite3.Connection, server_id: int, group_id: int) -> List[str]:
+    """递归收集权限组权限（包含继承父组），并避免循环依赖。"""
+    seen = set()
+    perms = set()
+    current_id = group_id
+
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        rows = conn.execute(
+            "SELECT permission FROM server_panel_group_perms WHERE group_id=?",
+            (current_id,),
+        ).fetchall()
+        for (perm,) in rows:
+            perms.add(perm)
+        parent_row = conn.execute(
+            "SELECT parent_group_id FROM server_panel_groups WHERE id=? AND server_id=?",
+            (current_id, server_id),
+        ).fetchone()
+        current_id = parent_row[0] if parent_row else None
+
+    return sorted(perms)
+
+
+def _has_parent_cycle(conn: sqlite3.Connection, server_id: int, group_id: int, parent_group_id: Optional[int]) -> bool:
+    """检查设置 parent_group_id 后是否形成循环。"""
+    seen = {group_id}
+    current_id = parent_group_id
+    while current_id is not None:
+        if current_id in seen:
+            return True
+        seen.add(current_id)
+        row = conn.execute(
+            "SELECT parent_group_id FROM server_panel_groups WHERE id=? AND server_id=?",
+            (current_id, server_id),
+        ).fetchone()
+        if not row:
+            break
+        current_id = row[0]
+    return False
 
 
 def _caller_can_manage(server_id: int, user_id: int, db: Session, perm: str = "panel.users") -> bool:
@@ -180,11 +217,7 @@ def _server_to_out(s: Server, db: Session, user_id: Optional[int] = None) -> Ser
             ).fetchone()
             if pg_row:
                 panel_group_name = pg_row[1]
-                perm_rows = _conn.execute(
-                    "SELECT permission FROM server_panel_group_perms WHERE group_id=?",
-                    (pg_row[0],),
-                ).fetchall()
-                panel_permissions = [r[0] for r in perm_rows]
+                panel_permissions = _collect_panel_group_permissions(_conn, s.id, pg_row[0])
 
     return ServerOut(
         id=s.id,
@@ -815,7 +848,13 @@ def list_panel_groups(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         groups = conn.execute(
-            "SELECT id, name, description, is_builtin FROM server_panel_groups WHERE server_id=? ORDER BY id",
+            """
+            SELECT g.id, g.name, g.description, g.parent_group_id, p.name, g.is_builtin
+            FROM server_panel_groups g
+            LEFT JOIN server_panel_groups p ON p.id = g.parent_group_id
+            WHERE g.server_id=?
+            ORDER BY g.id
+            """,
             (server_id,),
         ).fetchall()
         # 检测三个必备默认中文组是否齐全，缺少或有旧英文组则自动修复
@@ -825,15 +864,22 @@ def list_panel_groups(
         if needs_init:
             _init_server_panel_groups(server_id)
             groups = conn.execute(
-                "SELECT id, name, description, is_builtin FROM server_panel_groups WHERE server_id=? ORDER BY id",
+                """
+                SELECT g.id, g.name, g.description, g.parent_group_id, p.name, g.is_builtin
+                FROM server_panel_groups g
+                LEFT JOIN server_panel_groups p ON p.id = g.parent_group_id
+                WHERE g.server_id=?
+                ORDER BY g.id
+                """,
                 (server_id,),
             ).fetchall()
         result = []
-        for gid, name, desc, is_builtin in groups:
-            perms = conn.execute(
+        for gid, name, desc, parent_group_id, parent_group_name, is_builtin in groups:
+            direct_perms = conn.execute(
                 "SELECT permission FROM server_panel_group_perms WHERE group_id=? ORDER BY permission",
                 (gid,),
             ).fetchall()
+            effective_perms = _collect_panel_group_permissions(conn, server_id, gid)
             member_count = conn.execute(
                 "SELECT COUNT(*) FROM server_member_panel_groups WHERE group_id=?",
                 (gid,),
@@ -843,8 +889,11 @@ def list_panel_groups(
                 "server_id": server_id,
                 "name": name,
                 "description": desc,
+                "parent_group_id": parent_group_id,
+                "parent_group_name": parent_group_name,
                 "is_builtin": bool(is_builtin),
-                "permissions": [p[0] for p in perms],
+                "permissions": [p[0] for p in direct_perms],
+                "effective_permissions": effective_perms,
                 "member_count": member_count,
             })
     return {"ok": True, "data": result}
@@ -865,10 +914,17 @@ def create_panel_group(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         try:
+            if req.parent_group_id is not None:
+                parent = conn.execute(
+                    "SELECT id FROM server_panel_groups WHERE id=? AND server_id=?",
+                    (req.parent_group_id, server_id),
+                ).fetchone()
+                if not parent:
+                    raise HTTPException(400, "父组不存在")
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO server_panel_groups(server_id, name, description, is_builtin) VALUES(?,?,?,0)",
-                (server_id, req.name.strip(), req.description),
+                "INSERT INTO server_panel_groups(server_id, name, description, parent_group_id, is_builtin) VALUES(?,?,?,?,0)",
+                (server_id, req.name.strip(), req.description, req.parent_group_id),
             )
             gid = cursor.lastrowid
             for perm in req.permissions:
@@ -921,6 +977,29 @@ def update_panel_group(
                 "UPDATE server_panel_groups SET description=? WHERE id=?",
                 (req.description, group_id),
             )
+
+        parent_specified = 'parent_group_id' in getattr(req, 'model_fields_set', set())
+        if parent_specified:
+            if req.parent_group_id is None:
+                conn.execute(
+                    "UPDATE server_panel_groups SET parent_group_id=NULL WHERE id=?",
+                    (group_id,),
+                )
+            else:
+                if req.parent_group_id == group_id:
+                    raise HTTPException(400, "父组不能是自己")
+                parent = conn.execute(
+                    "SELECT id FROM server_panel_groups WHERE id=? AND server_id=?",
+                    (req.parent_group_id, server_id),
+                ).fetchone()
+                if not parent:
+                    raise HTTPException(400, "父组不存在")
+                if _has_parent_cycle(conn, server_id, group_id, req.parent_group_id):
+                    raise HTTPException(400, "父组继承形成循环，请重新选择")
+                conn.execute(
+                    "UPDATE server_panel_groups SET parent_group_id=? WHERE id=?",
+                    (req.parent_group_id, group_id),
+                )
 
         if req.permissions is not None:
             conn.execute("DELETE FROM server_panel_group_perms WHERE group_id=?", (group_id,))
