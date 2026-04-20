@@ -102,7 +102,7 @@
             <span class="online-dot dot-on"></span>
             <span class="pill-name">{{ p.name }}</span>
             <span v-if="p.group" class="pill-group">{{ p.group }}</span>
-            <button class="pill-inv-btn" @click.stop="openPlayerPanel(p.name, { isOnline: true, group: p.group, email: p.panel_email })" title="更多操作">
+              <button class="pill-inv-btn" @click.stop="openPlayerPanel(p.name, { isOnline: true, group: p.group, email: p.panel_email, isUnbound: !p.panel_email, ownerUserId: p.panel_email ? (members.find(m => m.email === p.panel_email)?.user_id ?? null) : null, deleteAccountName: p.account_name || p.name })" title="更多操作">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:10px;height:10px"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
             </button>
           </div>
@@ -137,7 +137,7 @@
               <span class="pill-name">{{ u.name }}</span>
               <span class="pill-group">{{ u.group || 'default' }}</span>
               <span v-if="u.online" class="pill-online-tag">在线</span>
-              <button class="pill-inv-btn" @click.stop="openPlayerPanel(u.name, { isOnline: !!u.online, group: u.group })" title="更多操作">
+              <button class="pill-inv-btn" @click.stop="openPlayerPanel(u.name, { isOnline: !!u.online, group: u.group, isUnbound: true, ownerUserId: null, deleteAccountName: u.account_name || u.name })" title="更多操作">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:10px;height:10px"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
               </button>
             </div>
@@ -226,31 +226,9 @@
 
               <!-- 操作按钮行 -->
               <div class="pc-actions">
-                <template v-if="deleteCharConfirm[p.character_name]">
-                  <span class="del-confirm-hint">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;vertical-align:middle"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                    确认删除？
-                  </span>
-                  <button class="btn btn-xs btn-danger"
-                    :disabled="deleteCharLoading[p.character_name]"
-                    @click="confirmDeleteChar(p.character_name)">
-                    {{ deleteCharLoading[p.character_name] ? '删除中…' : '确认' }}
-                  </button>
-                  <button class="btn btn-xs btn-outline"
-                    @click="deleteCharConfirm[p.character_name] = false">取消</button>
-                </template>
-                <button v-else
-                  class="btn btn-xs btn-outline-danger"
-                  :disabled="actionLoading[p.character_name]"
-                  @click="deleteCharConfirm[p.character_name] = true"
-                  title="删除游戏角色绑定及TShock账号"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-                  删除角色
-                </button>
                 <button class="btn btn-xs btn-outline" :disabled="!agentOnline"
                   style="margin-left:auto"
-                  @click="openPlayerPanel(p.character_name, { isOnline: p.online, group: p.group, email: drawerMember?.email, allChars: memberChars.map(c => c.character_name) })"
+                  @click="openPlayerPanel(p.character_name, { isOnline: p.online, group: p.group, email: drawerMember?.email, allChars: memberChars.map(c => c.character_name), isUnbound: false, ownerUserId: drawerMember?.user_id ?? null, deleteAccountName: p.character_name })"
                   title="查看详情与执行操作">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
                   更多操作
@@ -282,12 +260,18 @@
       :agent-online="agentOnline"
       :ssc-enabled="papSscEnabled"
       :all-chars="papPlayer.allChars"
+      :allow-assign-owner="canManage"
+      :current-owner-user-id="papPlayer.ownerUserId"
+      :assign-owner-options="papAssignOwnerOptions"
+      :allow-delete-account="canManage"
       ref="papRef"
       @close="papVisible = false"
       @open-inventory="name => { papVisible = false; openInventory(name) }"
       @action="handlePapAction"
       @ban-all="handlePapBanAll"
       @request-groups="handleRequestGroups"
+      @assign-owner="handlePapAssignOwner"
+      @delete-account="handlePapDeleteAccount"
     />
 
     <!-- ═══ 背包查看/编辑模态框 ═══ -->
@@ -314,7 +298,7 @@
 <script setup>
 import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import { getToken } from '@/api/auth'
-import { deleteMemberCharacter, kickMember } from '@/api/servers'
+import { kickMember, assignCharacterOwner, deleteGameAccount, deleteMemberCharacter } from '@/api/servers'
 import { apiUrl } from '@/api/base'
 import { usePlayerList } from '@/composables/usePlayerList'
 import InventoryModal from '@/components/InventoryModal.vue'
@@ -354,16 +338,36 @@ const charMap      = ref({})           // { character_name: email }
 const onlinePlayers = computed(() =>
   onlineFetch.players.value
     .filter(pl => pl.online)
-    .map(pl => ({ name: pl.name, group: pl.group || '', panel_email: charMap.value[pl.name] || null }))
+    .map((pl) => {
+      const displayName = (pl.name || '').trim()
+      const accountName = (pl.account_name || pl.name || '').trim()
+      const ownerEmail = charMap.value[displayName] || charMap.value[accountName] || null
+      return {
+        name: displayName,
+        account_name: accountName,
+        group: pl.group || '',
+        panel_email: ownerEmail,
+      }
+    })
+    .filter(pl => !!pl.name)
 )
 
 const allUnboundUsers = computed(() => {
   const boundNames = new Set(Object.keys(charMap.value).map(n => n.toLowerCase()))
   return allGameFetch.players.value
-    .filter(pl => {
+    .map((pl) => {
       const name = (pl.name || '').trim()
-      if (!name) return false
-      return !boundNames.has(name.toLowerCase())
+      const accountName = (pl.account_name || pl.name || '').trim()
+      const uid = Number(pl.user_id)
+      return { ...pl, name, account_name: accountName, user_id: uid }
+    })
+    .filter((pl) => {
+      if (!pl.name || !pl.account_name) return false
+      // 仅保留已注册游戏账号；在线游客(无账号)不应出现在可删除列表中
+      if (!Number.isFinite(pl.user_id) || pl.user_id <= 0) return false
+      const nameLc = pl.name.toLowerCase()
+      const accountLc = pl.account_name.toLowerCase()
+      return !boundNames.has(nameLc) && !boundNames.has(accountLc)
     })
     .sort((a, b) => {
       if (!!a.online !== !!b.online) return a.online ? -1 : 1
@@ -619,25 +623,6 @@ function playerAction(action, player) {
   })
 }
 
-// ── 删除游戏角色（管理员）───────────────────────────────────────────
-const deleteCharConfirm = ref({})
-const deleteCharLoading = ref({})
-
-async function confirmDeleteChar(charName) {
-  if (!serverIdCache.value || !drawerMember.value) return
-  deleteCharLoading.value[charName] = true
-  try {
-    await deleteMemberCharacter(serverIdCache.value, drawerMember.value.user_id, charName)
-    deleteCharConfirm.value[charName] = false
-    await loadMemberCharacters()
-  } catch (e) {
-    alert('删除角色失败: ' + e.message)
-    deleteCharConfirm.value[charName] = false
-  } finally {
-    deleteCharLoading.value[charName] = false
-  }
-}
-
 // ── 修改游戏组 ────────────────────────────────────────────────────
 const setGroupTarget = ref(null)
 const newGroupName   = ref('')
@@ -665,20 +650,40 @@ function confirmSetGroup() {
 // ── 玩家操作面板 ──────────────────────────────────────────────────
 const papVisible   = ref(false)
 const papSscEnabled = ref(false)
-const papPlayer   = ref({ name: '', email: '', group: '', isOnline: false, isMuted: false, hp: 0, maxHp: 0, mana: 0, maxMana: 0, allChars: [] })
+const papPlayer   = ref({
+  name: '',
+  deleteAccountName: '',
+  email: '',
+  group: '',
+  isOnline: false,
+  isMuted: false,
+  isUnbound: false,
+  hp: 0,
+  maxHp: 0,
+  mana: 0,
+  maxMana: 0,
+  ownerUserId: null,
+  allChars: [],
+})
 const papIsBanned = ref(false)
 const papBanTicket = ref(0)
 const papRef      = ref(null)
+const papAssignOwnerOptions = computed(() =>
+  members.value.map(m => ({ user_id: m.user_id, email: m.email }))
+)
 let   papReqId    = null
 let   papBanReqId = null
 
 function openPlayerPanel(name, opts = {}) {
   papPlayer.value = {
     name,
+    deleteAccountName: opts.deleteAccountName || name,
     email:    opts.email    || '',
     group:    opts.group    || '',
     isOnline: !!opts.isOnline,
     isMuted:  false,
+    isUnbound: typeof opts.isUnbound === 'boolean' ? opts.isUnbound : !opts.email,
+    ownerUserId: opts.ownerUserId ?? null,
     hp: 0, maxHp: 0, mana: 0, maxMana: 0,
     allChars: opts.allChars || [],
   }
@@ -748,6 +753,99 @@ function handlePapBanAll({ chars, reason, duration }) {
   }
   window.addEventListener('ws-message', handler)
   setTimeout(() => window.removeEventListener('ws-message', handler), 15000)
+}
+
+async function handlePapAssignOwner({ player, user_id }) {
+  if (!serverIdCache.value || !player) return
+  const targetUserId = (user_id == null || user_id === '') ? null : Number(user_id)
+  if (targetUserId != null && (!Number.isFinite(targetUserId) || targetUserId <= 0)) {
+    papRef.value?.showResult(false, '目标归属账号无效')
+    return
+  }
+  try {
+    const resp = await assignCharacterOwner(serverIdCache.value, {
+      character_name: player,
+      target_user_id: targetUserId,
+    })
+    const actionText = {
+      created: '已分配给',
+      reassigned: '已改归属为',
+      unchanged: '归属未变化，当前为',
+      cleared: '已清除归属，当前为',
+    }[resp.action] || '已设置归属为'
+    const nextEmail = resp.target_email || ''
+    const nextOwnerId = resp.target_user_id == null ? null : Number(resp.target_user_id)
+    papPlayer.value = {
+      ...papPlayer.value,
+      email: nextEmail,
+      isUnbound: !nextEmail,
+      ownerUserId: nextOwnerId,
+      allChars: nextEmail
+        ? Array.from(new Set([...(papPlayer.value.allChars || []), player]))
+        : (papPlayer.value.allChars || []).filter(c => c !== player),
+    }
+    papRef.value?.showResult(true, `${actionText} ${nextEmail || '无'}`)
+    await loadCharMap()
+    const affectedUserIds = [Number(nextOwnerId), Number(resp.previous_user_id)].filter((id) => Number.isFinite(id) && id > 0)
+    if (drawerOpen.value && affectedUserIds.includes(Number(drawerMember.value?.user_id))) {
+      await loadMemberCharacters()
+    }
+    onlineFetch.request(activeKey.value)
+    allGameFetch.request(activeKey.value)
+  } catch (e) {
+    papRef.value?.showResult(false, e.message || '分配失败')
+  }
+}
+
+async function handlePapDeleteAccount({ player }) {
+  if (!serverIdCache.value || !player) return
+  try {
+    let resp = null
+    const deleteTarget = (papPlayer.value?.deleteAccountName || player || '').trim()
+    if (!deleteTarget) {
+      throw new Error('缺少可删除的账号名')
+    }
+    const ownerId = Number(papPlayer.value?.ownerUserId)
+
+    if (Number.isFinite(ownerId) && ownerId > 0) {
+      try {
+        await deleteMemberCharacter(serverIdCache.value, ownerId, deleteTarget)
+        resp = {
+          removed_binding: true,
+          agent_dispatched: true,
+        }
+      } catch (primaryErr) {
+        try {
+          resp = await deleteGameAccount(serverIdCache.value, deleteTarget)
+        } catch {
+          throw primaryErr
+        }
+      }
+    } else {
+      resp = await deleteGameAccount(serverIdCache.value, deleteTarget)
+    }
+
+    const msgParts = []
+    if (resp.removed_binding) msgParts.push('绑定已删除')
+    else msgParts.push('未发现绑定记录')
+    if (resp.agent_dispatched) msgParts.push('已请求删除游戏账号')
+    if (deleteTarget !== player) msgParts.push(`删除目标账号：${deleteTarget}`)
+    if (resp.agent_warning) msgParts.push(resp.agent_warning)
+    const msg = msgParts.join('，')
+    papRef.value?.showResult(true, msg)
+    papPlayer.value = {
+      ...papPlayer.value,
+      email: '',
+      isUnbound: true,
+      ownerUserId: null,
+      allChars: (papPlayer.value.allChars || []).filter(c => c !== player && c !== deleteTarget),
+    }
+    await Promise.all([loadCharMap(), loadMemberCharacters()])
+    onlineFetch.request(activeKey.value)
+    allGameFetch.request(activeKey.value)
+  } catch (e) {
+    papRef.value?.showResult(false, e.message || '删除账号失败')
+  }
 }
 
 function refreshOnlinePlayers()  { onlineFetch.request(activeKey.value) }

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Dict, Optional
 from fastapi import WebSocket
@@ -7,6 +8,7 @@ class ConnectionManager:
     def __init__(self):
         self.active_agents: Dict[str, WebSocket] = {}
         self.active_webs: Dict[str, WebSocket] = {}
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
 
     def make_envelope(self, msg_type: str, payload: dict, msg_id: Optional[str] = None) -> str:
         return json.dumps({

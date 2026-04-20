@@ -440,13 +440,29 @@ namespace TerrariaManagerAgent.Services.Handlers
                     regMap.TryGetValue(n, out var acc);
                     var tsp = TShock.Players.FirstOrDefault(p => p != null && p.Active &&
                                    string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase));
-                    var grp = acc?.Group ?? tsp?.Group?.Name ?? "guest";
-                    players.Add(new { name = n, group = grp, online = true, user_id = acc?.ID ?? -1 });
+                    var onlineAcc = tsp?.Account;
+                    if (acc == null && !string.IsNullOrWhiteSpace(onlineAcc?.Name))
+                        regMap.TryGetValue(onlineAcc!.Name, out acc);
+
+                    var resolvedAccountName = !string.IsNullOrWhiteSpace(acc?.Name)
+                        ? acc!.Name
+                        : (!string.IsNullOrWhiteSpace(onlineAcc?.Name) ? onlineAcc!.Name : n);
+                    var resolvedUserId = acc?.ID ?? ((onlineAcc?.ID ?? -1) > 0 ? onlineAcc!.ID : -1);
+                    var grp = acc?.Group ?? onlineAcc?.Group ?? tsp?.Group?.Name ?? "guest";
+
+                    players.Add(new
+                    {
+                        name = n,
+                        account_name = resolvedAccountName,
+                        group = grp,
+                        online = true,
+                        user_id = resolvedUserId,
+                    });
                 }
                 foreach (var u in allUsers)
                 {
                     if (!onlineNames.Contains(u.Name))
-                        players.Add(new { name = u.Name, group = u.Group, online = false, user_id = u.ID });
+                        players.Add(new { name = u.Name, account_name = u.Name, group = u.Group, online = false, user_id = u.ID });
                 }
 
                 await _wsService.SendAsync(new
@@ -1614,13 +1630,13 @@ namespace TerrariaManagerAgent.Services.Handlers
 
             try
             {
-                var account = TShock.UserAccounts.GetUserAccountByName(username);
+                var account = ResolveUserAccountLoose(username);
                 if (account == null)
-                    throw new Exception($"游戏账号 \"{username}\" 不存在");
+                    throw new Exception($"游戏账号 \"{CanonicalizeAccountName(username)}\" 不存在");
 
                 TShock.UserAccounts.RemoveUserAccount(account);
 
-                string logEntry = $"[面板操作] 角色删除 — 账号: {username}, 操作者: {operatorEmail}, 时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
+                string logEntry = $"[面板操作] 角色删除 — 请求账号: {username}, 实际账号: {account.Name}, 操作者: {operatorEmail}, 时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
                 TShock.Log.Info(logEntry);
 
                 await _wsService.SendAsync(new
@@ -1632,8 +1648,8 @@ namespace TerrariaManagerAgent.Services.Handlers
                     {
                         ref_id = envelope.MsgId,
                         success = true,
-                        msg = $"角色 {username} 已删除",
-                        username,
+                        msg = $"角色 {account.Name} 已删除",
+                        username = account.Name,
                         operator_email = operatorEmail
                     }
                 });
@@ -1648,6 +1664,85 @@ namespace TerrariaManagerAgent.Services.Handlers
                     payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message, username }
                 });
             }
+        }
+
+        private static string ExtractColorTaggedName(string raw)
+        {
+            var value = (raw ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(value)) return value;
+
+            if (!value.StartsWith("[c/", StringComparison.OrdinalIgnoreCase))
+                return value;
+
+            var colonIdx = value.IndexOf(':');
+            var endIdx = value.LastIndexOf(']');
+            if (colonIdx > 0 && endIdx > colonIdx)
+            {
+                var inner = value.Substring(colonIdx + 1, endIdx - colonIdx - 1).Trim();
+                if (!string.IsNullOrWhiteSpace(inner)) return inner;
+            }
+            return value;
+        }
+
+        private static string TrimTailPunctuation(string raw)
+        {
+            var value = (raw ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(value)) return value;
+
+            while (value.Length > 0)
+            {
+                var ch = value[value.Length - 1];
+                if (ch == '.' || ch == '。' || ch == ',' || ch == '，' ||
+                    ch == '!' || ch == '！' || ch == '?' || ch == '？' ||
+                    ch == ';' || ch == '；' || ch == ':' || ch == '：')
+                {
+                    value = value.Substring(0, value.Length - 1).TrimEnd();
+                    continue;
+                }
+                break;
+            }
+
+            return value;
+        }
+
+        private static string CanonicalizeAccountName(string raw)
+        {
+            return TrimTailPunctuation(ExtractColorTaggedName(raw)).Trim();
+        }
+
+        private static TShockAPI.DB.UserAccount? ResolveUserAccountLoose(string username)
+        {
+            var canonical = CanonicalizeAccountName(username);
+            if (string.IsNullOrWhiteSpace(canonical)) return null;
+
+            var direct = TShock.UserAccounts.GetUserAccountByName(canonical);
+            if (direct != null) return direct;
+
+            var allUsers = TShock.UserAccounts.GetUserAccounts();
+
+            var exact = allUsers.FirstOrDefault(u =>
+                string.Equals((u?.Name ?? string.Empty).Trim(), canonical, StringComparison.OrdinalIgnoreCase));
+            if (exact != null) return exact;
+
+            // 兼容“传入在线显示名而非账号名”的场景：若在线玩家已登录账号，优先按其登录账号删除。
+            var online = TShock.Players.FirstOrDefault(p =>
+                p != null && p.Active &&
+                string.Equals(CanonicalizeAccountName(p.Name), canonical, StringComparison.OrdinalIgnoreCase) &&
+                p.Account != null && p.Account.ID > 0);
+            if (online?.Account != null) return online.Account;
+
+            var looseMatches = allUsers
+                .Where(u => u != null &&
+                            string.Equals(CanonicalizeAccountName(u.Name), canonical, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (looseMatches.Count == 1) return looseMatches[0];
+            if (looseMatches.Count > 1)
+            {
+                throw new Exception($"找到多个可能账号，无法确定删除目标: {string.Join(", ", looseMatches.Select(u => u.Name).Take(5))}");
+            }
+
+            return null;
         }
 
         public async Task HandleChangePassword(PacketEnvelope envelope)

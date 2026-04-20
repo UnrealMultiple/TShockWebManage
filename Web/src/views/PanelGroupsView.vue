@@ -29,17 +29,6 @@
     </div>
 
     <template v-else>
-      <!-- 权限说明 -->
-      <div class="info-banner">
-        <span class="info-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="16" x2="12" y2="12"/>
-            <line x1="12" y1="8" x2="12.01" y2="8"/>
-          </svg>
-        </span>
-        面板权限组决定成员在此服务器面板内能访问哪些功能。内置组不可删除，Owner 可自由新增或编辑自定义组。
-      </div>
 
       <div class="card-panel">
         <div class="body-toolbar">
@@ -51,7 +40,7 @@
               <input
                 v-model.trim="searchKeyword"
                 class="search-input"
-                placeholder="搜索组名 / 描述 / 权限"
+                placeholder="搜索组名 / 描述 / 权限 / 成员邮箱"
               />
             </div>
             <span class="result-hint">已显示 {{ filteredGroups.length }} / {{ groups.length }} 项</span>
@@ -102,7 +91,9 @@
                 <td>
                   <span class="view-badge">{{ (g.effective_permissions || g.permissions || []).length }} 项</span>
                 </td>
-                <td><span class="member-text">{{ g.member_count || 0 }} 名</span></td>
+                <td>
+                  <button class="member-link" @click="openMembers(g)" :disabled="!activeServer">{{ g.member_count || 0 }} 名</button>
+                </td>
                 <td>
                   <span v-if="g.parent_group_name" class="parent-badge">{{ g.parent_group_name }}</span>
                   <span v-else class="muted">无</span>
@@ -255,6 +246,65 @@
         </div>
       </div>
     </div>
+
+    <!-- ── 组成员查看模态 ─────────────────────────────────────────── -->
+    <div v-if="showMembersModal" class="modal-overlay" @click.self="closeMembers">
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3>组成员 — {{ membersModalGroup?.name }}</h3>
+          <button class="modal-close" @click="closeMembers">✕</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="membersLoading" class="state-box state-loading state-inline">
+            <div class="spinner"></div>
+            <span>正在加载成员…</span>
+          </div>
+          <div v-else>
+            <div v-if="membersList.length">
+              <div class="member-search-row">
+                <div class="search-wrap member-search-wrap">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  <input
+                    v-model.trim="memberKeyword"
+                    class="search-input"
+                    placeholder="搜索该组成员邮箱 / 面板权限"
+                  />
+                </div>
+                <span class="result-hint">{{ filteredMembersList.length }} / {{ membersList.length }} 名</span>
+              </div>
+
+              <table v-if="filteredMembersList.length" class="member-list-table">
+                <thead>
+                  <tr><th>邮箱</th><th>面板权限</th><th>加入时间</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="m in filteredMembersList" :key="m.user_id">
+                    <td>{{ m.email }}</td>
+                    <td>
+                      <span :class="['member-role-badge', memberRoleBadgeClass(m)]">{{ memberPanelGroupName(m) }}</span>
+                    </td>
+                    <td>{{ new Date(m.joined_at * 1000).toLocaleString('zh-CN') }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-else class="empty-row" style="padding:24px">
+                <div>没有匹配的成员</div>
+              </div>
+
+            </div>
+            <div v-else class="empty-row" style="padding:24px">
+              <div>该组暂无成员</div>
+            </div>
+            <p v-if="membersError" class="form-error">{{ membersError }}</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="closeMembers">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -265,6 +315,7 @@ import {
   createPanelGroup,
   updatePanelGroup,
   deletePanelGroup,
+  getServer,
 } from '@/api/servers'
 
 // ── 注入全局状态 ──────────────────────────────────────────────────
@@ -330,6 +381,7 @@ const TSHOCK_PERMS = PANEL_PERMISSION_PLAN[1].items
 const groups  = ref([])
 const loading = ref(false)
 const searchKeyword = ref('')
+const membersByGroup = ref({})
 
 const filteredGroups = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
@@ -340,7 +392,15 @@ const filteredGroups = computed(() => {
     const parent = (g.parent_group_name || '').toLowerCase()
     const directPerms = Array.isArray(g.permissions) ? g.permissions.join(' ').toLowerCase() : ''
     const effectivePerms = Array.isArray(g.effective_permissions) ? g.effective_permissions.join(' ').toLowerCase() : ''
-    return name.includes(keyword) || desc.includes(keyword) || parent.includes(keyword) || directPerms.includes(keyword) || effectivePerms.includes(keyword)
+    const memberText = (membersByGroup.value[g.id] || [])
+      .map((m) => `${m.email || ''} ${memberPanelGroupName(m)}`.toLowerCase())
+      .join(' ')
+    return name.includes(keyword)
+      || desc.includes(keyword)
+      || parent.includes(keyword)
+      || directPerms.includes(keyword)
+      || effectivePerms.includes(keyword)
+      || memberText.includes(keyword)
   })
 })
 
@@ -356,6 +416,12 @@ async function loadGroups() {
   try {
     const res = await listPanelGroups(sid)
     groups.value = res.data || []
+    try {
+      const data = await getServer(sid)
+      rebuildMembersByGroup(data.members || [], groups.value)
+    } catch {
+      membersByGroup.value = {}
+    }
   } catch (e) {
     console.error(e)
   } finally {
@@ -483,6 +549,92 @@ async function doDelete() {
     deleting.value = false
   }
 }
+
+// ── 组成员查看模态逻辑 ─────────────────────────────────────────
+const showMembersModal = ref(false)
+const membersModalGroup = ref(null)
+const membersList = ref([])
+const membersLoading = ref(false)
+const membersError = ref('')
+const memberKeyword = ref('')
+const defaultRoleGroupName = {
+  owner: '服主',
+  web_staff: '管理',
+  member: '成员',
+  admin: '管理',
+  default: '成员',
+}
+
+function memberPanelGroupName(member) {
+  return member?.panel_group_name || defaultRoleGroupName[member?.role] || member?.role || '成员'
+}
+
+function memberRoleBadgeClass(member) {
+  const name = memberPanelGroupName(member)
+  if (name === '服主') return 'role-owner'
+  if (name === '管理') return 'role-admin'
+  return 'role-member'
+}
+
+function rebuildMembersByGroup(members, groupList = groups.value) {
+  const map = {}
+  const nameToId = {}
+  for (const g of groupList || []) {
+    map[g.id] = []
+    nameToId[g.name] = g.id
+  }
+
+  for (const m of members || []) {
+    let gid = m.panel_group_id
+    if (gid === null || gid === undefined) {
+      const fallbackName = defaultRoleGroupName[m.role]
+      gid = fallbackName ? nameToId[fallbackName] : null
+    }
+    if (gid === null || gid === undefined) continue
+    if (!map[gid]) map[gid] = []
+    map[gid].push(m)
+  }
+  membersByGroup.value = map
+}
+
+const filteredMembersList = computed(() => {
+  const keyword = memberKeyword.value.trim().toLowerCase()
+  if (!keyword) return membersList.value
+  return membersList.value.filter((m) => {
+    const email = String(m.email || '').toLowerCase()
+    const groupName = String(memberPanelGroupName(m) || '').toLowerCase()
+    return email.includes(keyword) || groupName.includes(keyword)
+  })
+})
+
+function closeMembers() {
+  showMembersModal.value = false
+  membersModalGroup.value = null
+  membersList.value = []
+  membersError.value = ''
+  memberKeyword.value = ''
+}
+
+async function openMembers(g) {
+  if (!activeServer.value?.id) return
+  membersModalGroup.value = g
+  showMembersModal.value = true
+  membersList.value = []
+  membersLoading.value = true
+  membersError.value = ''
+  memberKeyword.value = ''
+  try {
+    const data = await getServer(activeServer.value.id)
+    const members = data.members || []
+    rebuildMembersByGroup(members)
+    membersList.value = membersByGroup.value[g.id] || []
+  } catch (e) {
+    membersError.value = e.message || '获取成员失败'
+    membersList.value = membersByGroup.value[g.id] || []
+  } finally {
+    membersLoading.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -587,6 +739,19 @@ async function doDelete() {
 
 .result-hint { font-size: 12px; color: #94a3b8; font-weight: 500; }
 
+.member-search-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.member-search-wrap {
+  min-width: 0;
+  flex: 1;
+}
+
 .groups-table-wrap {
   flex: 1;
   overflow: auto;
@@ -642,7 +807,80 @@ async function doDelete() {
   border: 1px solid #bfdbfe;
 }
 
-.member-text { font-size: 13px; color: #475569; }
+.member-link {
+  font-size: 13px;
+  color: #2563eb;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  font-weight: 600;
+}
+
+.member-link:hover:not(:disabled) {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.member-link:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.member-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.member-list-table th,
+.member-list-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  text-align: left;
+  font-size: 13px;
+}
+
+.member-list-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 600;
+}
+
+.member-list-table tr:last-child td {
+  border-bottom: none;
+}
+
+.member-role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.member-role-badge.role-owner {
+  color: #f59e0b;
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.member-role-badge.role-admin {
+  color: #6d28d9;
+  background: #f3e8ff;
+  border-color: #ddd6fe;
+}
+
+.member-role-badge.role-member {
+  color: #475569;
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
 .desc-text { color: #475569; }
 
 .parent-badge {
@@ -1044,6 +1282,11 @@ async function doDelete() {
   .row-actions {
     flex-wrap: wrap;
     justify-content: flex-start;
+  }
+
+  .member-search-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 </style>

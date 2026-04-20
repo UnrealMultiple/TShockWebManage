@@ -34,9 +34,9 @@
                 <span class="info-label">角色名</span>
                 <span class="info-val">{{ playerName }}</span>
               </div>
-              <div v-if="email" class="pap-info-item">
+              <div class="pap-info-item">
                 <span class="info-label">绑定邮箱</span>
-                <span class="info-val">{{ email }}</span>
+                <span class="info-val">{{ email || '无' }}</span>
               </div>
               <div class="pap-info-item">
                 <span class="info-label">游戏权限组</span>
@@ -108,10 +108,18 @@
                 </button>
                 <transition name="pap-slide">
                   <div v-if="setGroupOpen" class="pap-inline-form">
-                    <select v-if="availableGroups.length" v-model="newGroup" class="pap-input">
-                      <option value="" disabled>选择权限组</option>
-                      <option v-for="g in availableGroups" :key="g" :value="g">{{ g }}</option>
-                    </select>
+                    <template v-if="availableGroups.length">
+                      <input
+                        v-model.trim="groupKeyword"
+                        placeholder="按权限组名筛选"
+                        class="pap-input"
+                      />
+                      <select v-model="newGroup" class="pap-input">
+                        <option value="" disabled>选择权限组</option>
+                        <option v-for="g in filteredAvailableGroups" :key="g" :value="g">{{ g }}</option>
+                      </select>
+                      <span v-if="!filteredAvailableGroups.length" class="pap-inline-tip">无匹配权限组</span>
+                    </template>
                     <select v-else-if="groupsLoading" class="pap-input" disabled>
                       <option>获取权限组中…</option>
                     </select>
@@ -121,6 +129,32 @@
                 </transition>
               </div>
 
+            </div>
+          </div>
+
+          <!-- ── 账号归属（可修改） ── -->
+          <div v-if="allowAssignOwner" class="pap-section">
+            <div class="pap-section-title">账号归属（可修改）</div>
+            <div class="pap-inline-form">
+              <input
+                v-if="assignOwnerOptions.length"
+                v-model.trim="assignOwnerKeyword"
+                class="pap-input"
+                placeholder="按邮箱筛选面板账号"
+              />
+              <select v-if="assignOwnerOptions.length" v-model="assignOwnerUserId" class="pap-input">
+                <option :value="null">无</option>
+                <option v-for="opt in filteredAssignOwnerOptions" :key="opt.user_id" :value="opt.user_id">
+                  {{ opt.email }}
+                </option>
+              </select>
+              <span v-if="assignOwnerOptions.length && !filteredAssignOwnerOptions.length" class="pap-inline-tip">无匹配成员</span>
+              <span v-else-if="!assignOwnerOptions.length" class="pap-inline-tip">暂无可分配的面板成员</span>
+              <button
+                class="pap-confirm-btn"
+                :disabled="actionBusy"
+                @click="doAssignOwner"
+              >确认归属</button>
             </div>
           </div>
 
@@ -201,6 +235,25 @@
                   <button class="pap-cancel-btn" @click="unbanAllConfirm = false">取消</button>
                 </template>
               </div>
+
+              <div class="pap-danger-row" style="margin-top:6px">
+                <template v-if="!deleteAccountConfirm">
+                  <button
+                    class="pap-action-btn btn-danger-outline"
+                    :disabled="!allowDeleteAccount || actionBusy"
+                    :title="allowDeleteAccount ? '删除该角色绑定并请求删除 TShock 角色' : '当前不允许删除角色'"
+                    @click="deleteAccountConfirm = true"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                    删除角色
+                  </button>
+                </template>
+                <template v-else>
+                  <span class="pap-confirm-tip danger">确认删除 {{ playerName }} 角色？</span>
+                  <button class="pap-confirm-btn btn-danger-sm" :disabled="actionBusy" @click="doDeleteAccount">确认删除</button>
+                  <button class="pap-cancel-btn" @click="deleteAccountConfirm = false">取消</button>
+                </template>
+              </div>
             </div><!-- /pap-action-group -->
 
             <!-- 添加到黑名单（留空占位） -->
@@ -243,21 +296,29 @@ const props = defineProps({
   sscEnabled:  { type: Boolean, default: false },
   // 该邮箱账号下所有绑定角色名列表（用于一键封禁）
   allChars:    { type: Array,   default: () => [] },
+  allowAssignOwner: { type: Boolean, default: false },
+  assignOwnerOptions: { type: Array, default: () => [] },
+  currentOwnerUserId: { type: Number, default: null },
+  allowDeleteAccount: { type: Boolean, default: false },
   isBanned:    { type: Boolean, default: false },
   banTicket:   { type: Number,  default: 0 },
 })
 
-const emit = defineEmits(['close', 'open-inventory', 'action', 'ban-all', 'request-groups'])
+const emit = defineEmits(['close', 'open-inventory', 'action', 'ban-all', 'request-groups', 'assign-owner', 'delete-account'])
 
 // ── 本地 UI 状态 ──────────────────────────────────────────────────
 const banConfirm     = ref(false)
 const banAllConfirm  = ref(false)
 const unbanAllConfirm = ref(false)
+const deleteAccountConfirm = ref(false)
 const giveItemOpen  = ref(false)
 const setGroupOpen  = ref(false)
 const giveItemQuery   = ref('')
 const giveItemStack   = ref(1)
 const newGroup        = ref('')
+const groupKeyword    = ref('')
+const assignOwnerUserId = ref(null)
+const assignOwnerKeyword = ref('')
 const availableGroups = ref([])
 const groupsLoading   = ref(false)
 const actionBusy    = ref(false)
@@ -274,11 +335,17 @@ watch(() => props.show, (v) => {
   banConfirm.value     = false
   banAllConfirm.value  = false
   unbanAllConfirm.value = false
+  deleteAccountConfirm.value = false
   giveItemOpen.value  = false
   setGroupOpen.value  = false
   giveItemQuery.value = ''
   giveItemStack.value = 1
   newGroup.value      = props.group || ''
+  groupKeyword.value  = ''
+  assignOwnerUserId.value = Number.isFinite(Number(props.currentOwnerUserId))
+    ? Number(props.currentOwnerUserId)
+    : null
+  assignOwnerKeyword.value = ''
   availableGroups.value = []
   groupsLoading.value   = true
   resultMsg.value     = ''
@@ -287,6 +354,19 @@ watch(() => props.show, (v) => {
   banDurationCustom.value = ''
   // 面板打开时预加载权限组列表
   emit('request-groups')
+})
+
+const filteredAssignOwnerOptions = computed(() => {
+  const list = Array.isArray(props.assignOwnerOptions) ? props.assignOwnerOptions : []
+  const keyword = assignOwnerKeyword.value.trim().toLowerCase()
+  if (!keyword) return list
+  return list.filter((opt) => String(opt?.email || '').toLowerCase().includes(keyword))
+})
+
+const filteredAvailableGroups = computed(() => {
+  const keyword = groupKeyword.value.trim().toLowerCase()
+  if (!keyword) return availableGroups.value
+  return availableGroups.value.filter((g) => String(g || '').toLowerCase().includes(keyword))
 })
 
 const canBanAll  = computed(() => !!props.email && props.allChars.length > 0)
@@ -357,9 +437,28 @@ function doUnbanAll() {
   emit('action', { action: 'unban_all', player: '', chars: props.allChars })
 }
 
+function doAssignOwner() {
+  if (!props.allowAssignOwner) return
+  const parsed = assignOwnerUserId.value == null || assignOwnerUserId.value === ''
+    ? null
+    : Number(assignOwnerUserId.value)
+  if (parsed != null && (!Number.isFinite(parsed) || parsed <= 0)) return
+  emit('assign-owner', {
+    player: props.playerName,
+    user_id: parsed,
+  })
+}
+
+function doDeleteAccount() {
+  deleteAccountConfirm.value = false
+  if (!props.allowDeleteAccount) return
+  emit('delete-account', { player: props.playerName })
+}
+
 function toggleSetGroup() {
   setGroupOpen.value = !setGroupOpen.value
   if (setGroupOpen.value && !availableGroups.value.length) {
+    groupKeyword.value = ''
     groupsLoading.value = true
     emit('request-groups')
   }
@@ -485,6 +584,7 @@ defineExpose({
 }
 .pap-input:focus { border-color: #6366f1; }
 .pap-input-sm { max-width: 64px; }
+.pap-inline-tip { font-size: .78rem; color: #94a3b8; }
 .pap-confirm-btn {
   padding: 5px 12px; border-radius: 5px; font-size: .78rem; font-weight: 600;
   background: #6366f1; color: #fff; border: none; cursor: pointer; white-space: nowrap;

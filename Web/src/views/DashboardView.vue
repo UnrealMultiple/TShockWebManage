@@ -304,12 +304,19 @@
       :max-mana="papPlayer.maxMana"
       :agent-online="agentOnline"
       :ssc-enabled="papSscEnabled"
+      :all-chars="papPlayer.allChars"
+      :allow-assign-owner="canManageActiveServer"
+      :current-owner-user-id="papPlayer.ownerUserId"
+      :assign-owner-options="papAssignOwnerOptions"
+      :allow-delete-account="canManageActiveServer"
       ref="papRef"
       @close="papVisible = false"
       @open-inventory="name => { papVisible = false; openInventory(name) }"
       @action="handlePapAction"
       @ban-all="handlePapBanAll"
       @request-groups="handleRequestGroups"
+      @assign-owner="handlePapAssignOwner"
+      @delete-account="handlePapDeleteAccount"
     />
     <!-- 背包模态框（Dashboard 全页用） -->
     <InventoryModal
@@ -334,8 +341,9 @@
 
 <script setup>
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { getEmail } from '@/api/auth'
-import { updateServer } from '@/api/servers'
+import { getEmail, getToken } from '@/api/auth'
+import { updateServer, deleteGameAccount, assignCharacterOwner, deleteMemberCharacter } from '@/api/servers'
+import { apiUrl } from '@/api/base'
 import PlayerActionPanel from '@/components/PlayerActionPanel.vue'
 import InventoryModal from '@/components/InventoryModal.vue'
 import { useInventory } from '@/composables/useInventory'
@@ -842,15 +850,62 @@ function fetchDashMap() {
 // ── 玩家操作面板 ─────────────────────────────────────────────────
 const papVisible    = ref(false)
 const papSscEnabled = ref(false)
-const papPlayer     = ref({ name: '', email: '', group: '', hp: 0, maxHp: 0, mana: 0, maxMana: 0 })
+const papPlayer     = ref({ name: '', email: '', group: '', hp: 0, maxHp: 0, mana: 0, maxMana: 0, ownerUserId: null, allChars: [] })
 const papIsBanned   = ref(false)
 const papBanTicket  = ref(0)
 const papRef        = ref(null)
+const dashMembers   = ref([])
+const dashCharMap   = ref({})
+const papAssignOwnerOptions = computed(() =>
+  dashMembers.value.map((m) => ({ user_id: m.user_id, email: m.email }))
+)
 let   papInvReqId   = null
 let   papBanReqId   = null
 
+async function loadDashboardOwnershipContext() {
+  dashMembers.value = []
+  dashCharMap.value = {}
+  const sid = activeServer.value?.id
+  if (!sid || !canManageActiveServer.value) return
+  try {
+    const headers = { Authorization: `Bearer ${getToken()}` }
+    const [srvRes, mapRes] = await Promise.all([
+      fetch(apiUrl(`/api/servers/${sid}`), { headers }),
+      fetch(apiUrl(`/api/servers/${sid}/character-map`), { headers }),
+    ])
+    if (srvRes.ok) {
+      const srvData = await srvRes.json()
+      dashMembers.value = srvData.members || []
+    }
+    if (mapRes.ok) {
+      dashCharMap.value = await mapRes.json()
+    }
+  } catch {
+    // 归属数据加载失败不应影响仪表盘主流程
+  }
+}
+
 function openPlayerPanel(p) {
-  papPlayer.value = { name: p.name, email: '', group: p.group || '', hp: p.hp || 0, maxHp: p.max_hp || 0, mana: p.mana || 0, maxMana: p.max_mana || 0 }
+  const ownerEmail = dashCharMap.value[p.name] || ''
+  const ownerUserId = ownerEmail
+    ? (dashMembers.value.find((m) => m.email === ownerEmail)?.user_id ?? null)
+    : null
+  const allChars = ownerEmail
+    ? Object.entries(dashCharMap.value)
+      .filter(([, email]) => email === ownerEmail)
+      .map(([name]) => name)
+    : []
+  papPlayer.value = {
+    name: p.name,
+    email: ownerEmail,
+    group: p.group || '',
+    hp: p.hp || 0,
+    maxHp: p.max_hp || 0,
+    mana: p.mana || 0,
+    maxMana: p.max_mana || 0,
+    ownerUserId,
+    allChars,
+  }
   papSscEnabled.value = false
   papIsBanned.value = false
   papBanTicket.value = 0
@@ -901,6 +956,79 @@ function handlePapBanAll({ chars, reason, duration }) {
   }
   window.addEventListener('ws-message', handler)
   setTimeout(() => window.removeEventListener('ws-message', handler), 15000)
+}
+
+async function handlePapAssignOwner({ player, user_id }) {
+  const sid = activeServer.value?.id
+  if (!sid || !player) return
+  const targetUserId = (user_id == null || user_id === '') ? null : Number(user_id)
+  if (targetUserId != null && (!Number.isFinite(targetUserId) || targetUserId <= 0)) {
+    papRef.value?.showResult(false, '目标归属账号无效')
+    return
+  }
+  try {
+    const resp = await assignCharacterOwner(sid, {
+      character_name: player,
+      target_user_id: targetUserId,
+    })
+    const actionText = {
+      created: '已分配给',
+      reassigned: '已改归属为',
+      unchanged: '归属未变化，当前为',
+      cleared: '已清除归属，当前为',
+    }[resp.action] || '已设置归属为'
+    const nextEmail = resp.target_email || ''
+    const nextOwnerId = resp.target_user_id == null ? null : Number(resp.target_user_id)
+    papPlayer.value = {
+      ...papPlayer.value,
+      email: nextEmail,
+      ownerUserId: nextOwnerId,
+      allChars: nextEmail
+        ? Array.from(new Set([...(papPlayer.value.allChars || []), player]))
+        : (papPlayer.value.allChars || []).filter(c => c !== player),
+    }
+    papRef.value?.showResult(true, `${actionText} ${nextEmail || '无'}`)
+    await loadDashboardOwnershipContext()
+  } catch (e) {
+    papRef.value?.showResult(false, e.message || '分配失败')
+  }
+}
+
+async function handlePapDeleteAccount({ player }) {
+  const sid = activeServer.value?.id
+  if (!sid || !player) return
+  try {
+    let resp = null
+    const ownerId = Number(papPlayer.value?.ownerUserId)
+
+    if (Number.isFinite(ownerId) && ownerId > 0) {
+      try {
+        await deleteMemberCharacter(sid, ownerId, player)
+        resp = {
+          removed_binding: true,
+          agent_dispatched: true,
+        }
+      } catch (primaryErr) {
+        try {
+          resp = await deleteGameAccount(sid, player)
+        } catch {
+          throw primaryErr
+        }
+      }
+    } else {
+      resp = await deleteGameAccount(sid, player)
+    }
+
+    const msgParts = []
+    if (resp.removed_binding) msgParts.push('绑定已删除')
+    else msgParts.push('未发现绑定记录')
+    if (resp.agent_dispatched) msgParts.push('已请求删除游戏账号')
+    if (resp.agent_warning) msgParts.push(resp.agent_warning)
+    papRef.value?.showResult(true, msgParts.join('，'))
+    await loadDashboardOwnershipContext()
+  } catch (e) {
+    papRef.value?.showResult(false, e.message || '删除账号失败')
+  }
 }
 
 // ── 背包（composable）──────────────────────────────────────────────
@@ -1023,11 +1151,17 @@ watch(activeServerKey, () => {
   } else {
     stopPlayerStatsPolling()
   }
+  loadDashboardOwnershipContext()
+})
+
+watch([activeServer, canManageActiveServer], () => {
+  loadDashboardOwnershipContext()
 })
 
 onMounted(() => {
   window.addEventListener('ws-message', onWsMessage)
   loadMapCache()
+  loadDashboardOwnershipContext()
   if (props.agentOnline && activeServerKey.value) {
     fetchWorldProgress()
     fetchPlayerStats()

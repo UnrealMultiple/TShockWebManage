@@ -82,6 +82,21 @@ export function deleteMyCharacter(server_id, character_name) {
 export function deleteMemberCharacter(server_id, target_user_id, character_name) {
   return request('DELETE', `/api/servers/${server_id}/members/${target_user_id}/characters/${encodeURIComponent(character_name)}`)
 }
+
+/** 手动分配或修改游戏账号归属（服主/网页管理员） */
+export function assignCharacterOwner(server_id, { character_name, target_user_id }) {
+  return request('POST', `/api/servers/${server_id}/characters/assign`, { character_name, target_user_id })
+}
+
+/** 兼容旧调用名 */
+export function assignUnboundCharacter(server_id, payload) {
+  return assignCharacterOwner(server_id, payload)
+}
+
+/** 删除游戏账号（删除绑定并请求 Agent 删除 TShock 账号） */
+export function deleteGameAccount(server_id, character_name) {
+  return request('DELETE', `/api/servers/${server_id}/characters?character_name=${encodeURIComponent(character_name)}`)
+}
 // ── 面板权限组 ───────────────────────────────────────────────────────────────
 
 /** 列出服务器所有面板权限组 */
@@ -112,4 +127,16 @@ export function getMemberPanelGroup(server_id, user_id) {
 /** 分配成员到面板权限组（服主/网页管理员） */
 export function assignMemberPanelGroup(server_id, user_id, group_id) {
   return request('PUT', `/api/servers/${server_id}/members/${user_id}/panel-group`, { group_id })
+}
+
+// ── 面板功能管理 ─────────────────────────────────────────────────────────────
+
+/** 获取面板功能配置 */
+export function getPanelFeatures(server_id) {
+  return request('GET', `/api/servers/${server_id}/panel-features`)
+}
+
+/** 更新面板功能配置 */
+export function updatePanelFeatures(server_id, { register_limit }) {
+  return request('PUT', `/api/servers/${server_id}/panel-features`, { register_limit })
 }

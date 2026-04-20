@@ -218,7 +218,7 @@
       <main class="main-content">
         <router-view v-slot="{ Component }">
           <transition name="page-fade" mode="out-in">
-            <component :is="Component" v-bind="{ wsState, agentOnline }" />
+            <component :is="Component" :key="route.fullPath" v-bind="{ wsState, agentOnline }" />
           </transition>
         </router-view>
       </main>

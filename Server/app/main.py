@@ -23,6 +23,8 @@ def _run_migrations():
             conn.execute("ALTER TABLE servers ADD COLUMN game_version TEXT DEFAULT ''")
         if "show_ip" not in cols:
             conn.execute("ALTER TABLE servers ADD COLUMN show_ip INTEGER NOT NULL DEFAULT 1")
+        if "register_limit" not in cols:
+            conn.execute("ALTER TABLE servers ADD COLUMN register_limit INTEGER NOT NULL DEFAULT 1")
         if "local_start_enabled" not in cols:
             conn.execute("ALTER TABLE servers ADD COLUMN local_start_enabled INTEGER NOT NULL DEFAULT 0")
         if "local_start_path" not in cols:

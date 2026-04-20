@@ -99,6 +99,7 @@ class ServerOut(BaseModel):
     qq_group:     Optional[str] = ""
     game_version: Optional[str] = ""
     show_ip:      bool = True
+    register_limit: int = 1
     # 同机直接启动配置
     local_start_enabled: bool = False
     local_start_path:    str  = ""
@@ -114,6 +115,11 @@ class BindVerifyReq(BaseModel):
     """绑定已有游戏角色的验证码校验"""
     username: str
     code: str
+
+class AssignCharacterOwnerReq(BaseModel):
+    """管理员手动分配或修改游戏账号归属"""
+    character_name: str
+    target_user_id: Optional[int] = None
 
 
 # ── 面板权限组相关模型 ──────────────────────────────────────────────────────
@@ -144,3 +150,14 @@ class PanelGroupOut(BaseModel):
 
 class PanelMemberGroupUpdate(BaseModel):
     group_id: int
+
+
+# ── 面板功能管理相关模型 ─────────────────────────────────────────────────
+
+class PanelFeatureSettingsUpdate(BaseModel):
+    register_limit: int = Field(..., ge=0, le=50)
+
+
+class PanelFeatureSettingsOut(BaseModel):
+    register_limit: int = Field(default=1, ge=0, le=50)
+    registered_count: int = 0

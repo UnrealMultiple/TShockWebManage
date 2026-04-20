@@ -68,7 +68,7 @@ const routes = [
       {
         path: 'panel-features',
         name: 'PanelFeatures',
-        component: () => import('@/views/PlaceholderView.vue'),
+        component: () => import('@/views/PanelFeaturesView.vue'),
         meta: { title: '面板功能管理' }
       },
       {

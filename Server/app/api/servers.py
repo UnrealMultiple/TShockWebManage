@@ -16,7 +16,9 @@ from app.models.schemas import (
     ServerClaimReq, ServerJoinReq, ServerUpdateReq,
     ServerOut, ServerDetailOut, ServerMemberOut,
     UpdateMemberRoleReq, BindVerifyReq,
+    AssignCharacterOwnerReq,
     PanelGroupCreate, PanelGroupUpdate, PanelGroupOut, PanelMemberGroupUpdate,
+    PanelFeatureSettingsOut, PanelFeatureSettingsUpdate,
 )
 from app.services.ws_manager import manager
 
@@ -200,6 +202,35 @@ def _caller_can_manage(server_id: int, user_id: int, db: Session, perm: str = "p
     return _has_panel_perm(server_id, user_id, perm)
 
 
+def _normalize_register_limit(limit_value: Optional[int]) -> int:
+    try:
+        limit = int(limit_value if limit_value is not None else 1)
+    except Exception:
+        limit = 1
+    return max(0, min(50, limit))
+
+
+def _count_registered_characters(conn: sqlite3.Connection, agent_key: str, user_id: Optional[int] = None) -> int:
+    if user_id is None:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM game_characters WHERE agent_key=?",
+            (agent_key,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM game_characters WHERE agent_key=? AND user_id=?",
+            (agent_key, user_id),
+        ).fetchone()
+    return int(row[0] if row and row[0] is not None else 0)
+
+
+def _assert_user_register_quota_available(conn: sqlite3.Connection, server: Server, user_id: int):
+    limit = _normalize_register_limit(getattr(server, "register_limit", 1))
+    current = _count_registered_characters(conn, server.agent_key, user_id=user_id)
+    if current >= limit:
+        raise HTTPException(400, f"当前账号可注册角色已达上限（{limit}）")
+
+
 def _server_to_out(s: Server, db: Session, user_id: Optional[int] = None) -> ServerOut:
     server_role = None
     panel_group_name = None
@@ -237,6 +268,7 @@ def _server_to_out(s: Server, db: Session, user_id: Optional[int] = None) -> Ser
         qq_group=s.qq_group or "",
         game_version=s.game_version or "",
         show_ip=bool(s.show_ip) if s.show_ip is not None else True,
+        register_limit=_normalize_register_limit(getattr(s, "register_limit", 1)),
         local_start_enabled=bool(s.local_start_enabled) if s.local_start_enabled is not None else False,
         local_start_path=s.local_start_path or "",
     )
@@ -581,6 +613,7 @@ def update_server(
         qq_group=server.qq_group or "",
         game_version=server.game_version or "",
         show_ip=bool(server.show_ip) if server.show_ip is not None else True,
+        register_limit=_normalize_register_limit(getattr(server, "register_limit", 1)),
         local_start_enabled=bool(server.local_start_enabled) if server.local_start_enabled is not None else False,
         local_start_path=server.local_start_path or "",
     )
@@ -734,9 +767,26 @@ async def delete_member_character(
     return {"ok": True}
 
 
-def _fire_delete_user(agent_key: str, username: str, operator_email: str):
+def _is_agent_connected(agent_key: str) -> bool:
+    try:
+        return bool(agent_key) and (agent_key in manager.active_agents)
+    except Exception:
+        return False
+
+
+def _has_any_agent_connected() -> bool:
+    try:
+        return len(manager.active_agents) > 0
+    except Exception:
+        return False
+
+
+def _fire_delete_user(agent_key: str, username: str, operator_email: str) -> bool:
     """fire-and-forget：发送 delete_user 到 Agent，让其删除 TShock 账号并留痕"""
     try:
+        if not _has_any_agent_connected():
+            return False
+
         msg = json.dumps({
             "type": "delete_user",
             "msg_id": new_id(),
@@ -746,9 +796,156 @@ def _fire_delete_user(agent_key: str, username: str, operator_email: str):
                 "operator_email": operator_email,
             },
         })
-        asyncio.create_task(manager.send_agent(agent_key, msg))
+
+        # 该函数在同步路由中也会被调用：优先挂到当前事件循环；若无，则回投到 WS 主循环。
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            coro = manager.send_agent(agent_key, msg)
+            try:
+                loop.create_task(coro)
+                return True
+            except Exception:
+                try:
+                    coro.close()
+                except Exception:
+                    pass
+
+        bg_loop = getattr(manager, "loop", None)
+        if bg_loop and bg_loop.is_running():
+            coro = manager.send_agent(agent_key, msg)
+            try:
+                asyncio.run_coroutine_threadsafe(coro, bg_loop)
+                return True
+            except Exception:
+                try:
+                    coro.close()
+                except Exception:
+                    pass
+
+        return False
     except Exception:
-        pass
+        return False
+
+
+def _extract_color_tag_name(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text.lower().startswith("[c/"):
+        return text
+    colon_idx = text.find(":")
+    end_idx = text.rfind("]")
+    if colon_idx > 0 and end_idx > colon_idx:
+        inner = text[colon_idx + 1:end_idx].strip()
+        if inner:
+            return inner
+    return text
+
+
+def _trim_tail_punctuation(raw: str) -> str:
+    text = (raw or "").strip()
+    tail = {".", "。", ",", "，", "!", "！", "?", "？", ";", "；", ":", "："}
+    while text and text[-1] in tail:
+        text = text[:-1].rstrip()
+    return text
+
+
+def _canonicalize_character_name(raw: str) -> str:
+    return _trim_tail_punctuation(_extract_color_tag_name(raw or "")).strip()
+
+
+def _resolve_character_binding(conn: sqlite3.Connection, agent_key: str, raw_name: str):
+    # 1) 先按原名匹配（忽略大小写）
+    trimmed = (raw_name or "").strip()
+    if not trimmed:
+        return None
+
+    row = conn.execute(
+        "SELECT id, character_name FROM game_characters WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+        (agent_key, trimmed),
+    ).fetchone()
+    if row:
+        return row
+
+    # 2) 再按规范化后的名称匹配（处理彩字名、尾标点）
+    canonical = _canonicalize_character_name(trimmed)
+    if canonical and canonical.lower() != trimmed.lower():
+        row = conn.execute(
+            "SELECT id, character_name FROM game_characters WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+            (agent_key, canonical),
+        ).fetchone()
+        if row:
+            return row
+
+    # 3) 最后做一次模糊规范化比较，避免历史脏数据导致漏删
+    rows = conn.execute(
+        "SELECT id, character_name FROM game_characters WHERE agent_key=?",
+        (agent_key,),
+    ).fetchall()
+    matched = [
+        r for r in rows
+        if _canonicalize_character_name(r[1]).lower() == canonical.lower()
+    ]
+    if len(matched) == 1:
+        return matched[0]
+    if len(matched) > 1:
+        names = ", ".join([m[1] for m in matched[:5]])
+        raise HTTPException(409, f"匹配到多个相似角色名，请使用更精确名称重试：{names}")
+    return None
+
+
+def _delete_game_account_impl(
+    server_id: int,
+    character_name: str,
+    db: Session,
+    user_id: int,
+):
+    if not _caller_can_manage(server_id, user_id, db, "panel.users"):
+        raise HTTPException(403, "无管理权限")
+
+    server = db.query(Server).filter_by(id=server_id).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+
+    incoming_name = (character_name or "").strip()
+    if not incoming_name:
+        raise HTTPException(400, "character_name 不能为空")
+
+    removed_binding = False
+    resolved_name = incoming_name
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        row = _resolve_character_binding(conn, server.agent_key, incoming_name)
+        if row:
+            bind_id, stored_name = row
+            conn.execute("DELETE FROM game_characters WHERE id=?", (bind_id,))
+            conn.commit()
+            removed_binding = True
+            resolved_name = stored_name or incoming_name
+
+    operator_email = _get_user_email(user_id)
+    dispatch_name = _canonicalize_character_name(resolved_name) or resolved_name
+    agent_key_matched = _is_agent_connected(server.agent_key)
+    agent_connected = _has_any_agent_connected()
+    agent_dispatched = _fire_delete_user(server.agent_key, dispatch_name, operator_email)
+
+    warning = None
+    if not agent_connected:
+        warning = "Agent 未在线，仅删除绑定记录；游戏账号删除将在 Agent 在线后可重试"
+    elif not agent_key_matched:
+        warning = "未找到匹配的 Agent Key，已向在线 Agent 广播删除请求"
+    elif not agent_dispatched:
+        warning = "已处理绑定记录，但通知 Agent 删除游戏账号失败，请稍后重试"
+
+    return {
+        "ok": True,
+        "removed_binding": removed_binding,
+        "character_name": dispatch_name,
+        "agent_connected": agent_connected,
+        "agent_dispatched": agent_dispatched,
+        "agent_warning": warning,
+    }
 
 
 # ── 绑定已有游戏角色（验证码校验）────────────────────────────────────────
@@ -796,6 +993,8 @@ def bind_verify(
         if existing:
             raise HTTPException(400, "该游戏账号已被绑定，无法重复绑定")
 
+        _assert_user_register_quota_available(conn, server, user_id)
+
         conn.execute(
             "INSERT INTO game_characters (user_id, agent_key, character_name, registered_at) "
             "VALUES (?, ?, ?, ?)",
@@ -832,6 +1031,150 @@ def get_character_map(
         ).fetchall()
 
     return {r[0]: r[1] for r in rows}
+
+
+@router.post("/{server_id}/characters/assign", summary="手动分配/修改游戏账号归属（Owner/管理员）")
+def assign_character_owner(
+    server_id: int,
+    req: AssignCharacterOwnerReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    if not _caller_can_manage(server_id, user_id, db, "panel.users"):
+        raise HTTPException(403, "无管理权限")
+
+    server = db.query(Server).filter_by(id=server_id).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+
+    target_user_id = int(req.target_user_id) if req.target_user_id is not None else None
+    if target_user_id is not None:
+        target_member = db.query(ServerMember).filter_by(server_id=server_id, user_id=target_user_id).first()
+        if not target_member:
+            raise HTTPException(404, "目标成员不在该服务器中")
+
+    character_name = (req.character_name or "").strip()
+    if not character_name:
+        raise HTTPException(400, "character_name 不能为空")
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        exists = conn.execute(
+            "SELECT id, user_id, character_name FROM game_characters WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+            (server.agent_key, character_name),
+        ).fetchone()
+
+        prev_user_id = None
+        if target_user_id is None:
+            # 允许设置为“无”：删除现有绑定
+            if exists:
+                bind_id, prev_user_id, canonical_name = exists
+                conn.execute("DELETE FROM game_characters WHERE id=?", (bind_id,))
+                bound_name = canonical_name or character_name
+                action = "cleared"
+            else:
+                bound_name = character_name
+                action = "unchanged"
+        else:
+            if exists:
+                bind_id, prev_user_id, canonical_name = exists
+                action = "unchanged"
+                if int(prev_user_id) != target_user_id:
+                    conn.execute(
+                        "UPDATE game_characters SET user_id=? WHERE id=?",
+                        (target_user_id, bind_id),
+                    )
+                    action = "reassigned"
+                bound_name = canonical_name or character_name
+            else:
+                conn.execute(
+                    "INSERT INTO game_characters (user_id, agent_key, character_name, registered_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (target_user_id, server.agent_key, character_name, int(time.time())),
+                )
+                bound_name = character_name
+                action = "created"
+        conn.commit()
+
+    previous_email = _get_user_email(prev_user_id) if prev_user_id else None
+    target_email = _get_user_email(target_user_id) if target_user_id else None
+    return {
+        "ok": True,
+        "action": action,
+        "character_name": bound_name,
+        "target_user_id": target_user_id,
+        "target_email": target_email,
+        "previous_user_id": prev_user_id,
+        "previous_email": previous_email,
+    }
+
+
+@router.delete("/{server_id}/characters", summary="删除游戏账号（绑定+TShock 账号）")
+def delete_game_account(
+    server_id: int,
+    character_name: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    if not isinstance(character_name, str) or not character_name.strip():
+        raise HTTPException(400, "character_name 不能为空")
+    return _delete_game_account_impl(server_id, character_name.strip(), db, user_id)
+
+
+# ── 面板功能管理 ───────────────────────────────────────────────────────────
+
+@router.get("/{server_id}/panel-features", response_model=PanelFeatureSettingsOut,
+            summary="获取面板功能配置")
+def get_panel_features(
+    server_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    if not _caller_can_manage(server_id, user_id, db, "panel.features"):
+        raise HTTPException(403, "无权限，需要服务器 Owner 或 panel.features 权限")
+
+    server = db.query(Server).filter_by(id=server_id).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        current = _count_registered_characters(conn, server.agent_key, user_id=user_id)
+
+    return PanelFeatureSettingsOut(
+        register_limit=_normalize_register_limit(getattr(server, "register_limit", 1)),
+        registered_count=current,
+    )
+
+
+@router.put("/{server_id}/panel-features", response_model=PanelFeatureSettingsOut,
+            summary="更新面板功能配置")
+def update_panel_features(
+    server_id: int,
+    req: PanelFeatureSettingsUpdate,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    if not _caller_can_manage(server_id, user_id, db, "panel.features"):
+        raise HTTPException(403, "无权限，需要服务器 Owner 或 panel.features 权限")
+
+    server = db.query(Server).filter_by(id=server_id).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+
+    server.register_limit = _normalize_register_limit(req.register_limit)
+    try:
+        db.commit()
+        db.refresh(server)
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(500, f"数据库错误: {e}")
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        current = _count_registered_characters(conn, server.agent_key, user_id=user_id)
+
+    return PanelFeatureSettingsOut(
+        register_limit=_normalize_register_limit(getattr(server, "register_limit", 1)),
+        registered_count=current,
+    )
 
 
 # ── 面板权限组管理 ────────────────────────────────────────────────────────────

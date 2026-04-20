@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import random
@@ -178,6 +179,44 @@ def is_server_member(email: str, agent_key: str) -> bool:
         return False
 
 
+def get_user_id_by_email(email: str):
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT id FROM users WHERE email=? COLLATE NOCASE LIMIT 1",
+                (email,),
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
+def get_user_register_quota(agent_key: str, user_id: int):
+    """返回 (单账号注册上限, 该账号当前已注册数)。默认上限为 1。"""
+    agent_key = _normalize_agent_key(agent_key)
+    if not agent_key or not user_id:
+        return 1, 0
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT register_limit FROM servers WHERE agent_key=? LIMIT 1",
+                (agent_key,),
+            ).fetchone()
+            try:
+                limit = int(row[0] if row and row[0] is not None else 1)
+            except Exception:
+                limit = 1
+            limit = max(0, min(50, limit))
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM game_characters WHERE agent_key=? AND user_id=?",
+                (agent_key, user_id),
+            ).fetchone()
+            count = int(count_row[0] if count_row and count_row[0] is not None else 0)
+        return limit, count
+    except Exception:
+        return 1, 0
+
+
 def list_member_agent_keys(email: str):
     """Return all agent_keys for servers the user has joined."""
     try:
@@ -301,6 +340,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
     client_id = None
     try:
         await websocket.accept()
+        manager.loop = asyncio.get_running_loop()
         email = verify_token(token)
         if not email:
             await websocket.send_text(json.dumps({"type": "error", "msg": "未授权"}))
@@ -440,6 +480,22 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                 if not is_server_member(email, target_key):
                     await websocket.send_text(manager.make_envelope("register_user_resp", {
                         "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，请先加入该服务器"
+                    }))
+                    continue
+
+                current_user_id = get_user_id_by_email(email)
+                if not current_user_id:
+                    await websocket.send_text(manager.make_envelope("register_user_resp", {
+                        "ref_id": packet.get("msg_id"), "success": False, "msg": "用户状态异常，请重新登录"
+                    }))
+                    continue
+
+                register_limit, registered_count = get_user_register_quota(target_key, current_user_id)
+                if registered_count >= register_limit:
+                    await websocket.send_text(manager.make_envelope("register_user_resp", {
+                        "ref_id": packet.get("msg_id"),
+                        "success": False,
+                        "msg": f"当前账号可注册角色已达上限（{register_limit}）",
                     }))
                     continue
 
@@ -803,6 +859,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
 async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default="")):
     try:
         await websocket.accept()
+        manager.loop = asyncio.get_running_loop()
 
         agent_key = _normalize_agent_key(agent_key)
 

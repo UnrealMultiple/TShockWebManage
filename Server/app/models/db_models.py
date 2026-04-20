@@ -40,6 +40,8 @@ class Server(Base):
     game_version = Column(String(32), nullable=True, default="")
     # True = 在公共频道/介绍页显示 IP，False = 隐藏
     show_ip      = Column(Boolean, nullable=False, default=True)
+    # 面板功能：每个面板账号在该服务器可绑定/注册的角色总数上限（0-50，默认 1）
+    register_limit = Column(Integer, nullable=False, default=1)
 
     # 同机直接启动配置（后端与 TShock 在同一台机器时使用）
     local_start_enabled = Column(Boolean, nullable=False, default=False)
