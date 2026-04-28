@@ -1,4 +1,4 @@
-name: Build TShock Agent Plugin
+name: Build Terraria Manager Agent Plugin
 
 on:
   push:
@@ -25,36 +25,35 @@ jobs:
           dotnet-version: "9.0.x"
 
       - name: Restore
-        run: dotnet restore Agent/TerrariaAgent.csproj
+        run: dotnet restore Agent/TerrariaManagerAgent.csproj
 
       - name: Build Release
-        run: dotnet build Agent/TerrariaAgent.csproj -c Release --no-restore -o artifacts/AgentPlugin/ServerPlugins
+        run: dotnet build Agent/TerrariaManagerAgent.csproj -c Release --no-restore -o artifacts/AgentPlugin/ServerPlugins
 
       - name: Collect plugin dll only
         shell: pwsh
         run: |
-          $dll = "artifacts/AgentPlugin/ServerPlugins/TerrariaAgent.dll"
+          $dll = "artifacts/AgentPlugin/ServerPlugins/TerrariaManagerAgent.dll"
           if (!(Test-Path $dll)) {
             throw "Plugin dll not found: $dll"
           }
           New-Item -ItemType Directory -Force -Path artifacts/AgentPluginRelease | Out-Null
-          Copy-Item $dll "artifacts/AgentPluginRelease/TerrariaAgent.dll" -Force
+          Copy-Item $dll "artifacts/AgentPluginRelease/TerrariaManagerAgent.dll" -Force
 
       - name: Upload dll artifact only
         uses: actions/upload-artifact@v4
         with:
-          name: TerrariaAgent-Plugin-dll
-          path: artifacts/AgentPluginRelease/TerrariaAgent.dll
+          name: TerrariaManagerAgent-Plugin-dll
+          path: artifacts/AgentPluginRelease/TerrariaManagerAgent.dll
           if-no-files-found: error
 
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: agent-latest
-          name: "TShock Agent Plugin (latest)"
+          name: "Terraria Manager Agent Plugin (latest)"
           body: |
-            Auto-release from master branch.
-            Commit: ${{ github.sha }}
+            适用于 TShock 服务端的 Agent 插件，将 `TerrariaManagerAgent.dll` 放入服务端 `ServerPlugins/` 目录后重启即可加载。
           prerelease: false
           make_latest: false
-          files: artifacts/AgentPluginRelease/TerrariaAgent.dll
+          files: artifacts/AgentPluginRelease/TerrariaManagerAgent.dll

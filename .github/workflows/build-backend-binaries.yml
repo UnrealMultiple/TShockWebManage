@@ -13,8 +13,24 @@ permissions:
 
 jobs:
   build:
-    name: Build win-x64
-    runs-on: windows-latest
+    name: Build ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            bin: terraria-backend.exe
+            release_bin: terraria-backend-win-x64.exe
+          - os: ubuntu-latest
+            rid: linux-x64
+            bin: terraria-backend
+            release_bin: terraria-backend-linux-x64
+          - os: macos-13
+            rid: osx-x64
+            bin: terraria-backend
+            release_bin: terraria-backend-osx-x64
 
     defaults:
       run:
@@ -44,9 +60,9 @@ jobs:
             --clean \
             --onefile \
             --name terraria-backend \
-            --distpath artifacts/win-x64 \
-            --workpath build/win-x64 \
-            --specpath build/win-x64 \
+            --distpath artifacts/${{ matrix.rid }} \
+            --workpath build/${{ matrix.rid }} \
+            --specpath build/${{ matrix.rid }} \
             --collect-all fastapi \
             --collect-all starlette \
             --collect-all pydantic \
@@ -55,22 +71,47 @@ jobs:
 
       - name: Verify output
         run: |
-          test -f artifacts/win-x64/terraria-backend.exe
+          test -f artifacts/${{ matrix.rid }}/${{ matrix.bin }}
 
-      - name: Upload exe artifact only
+      - name: Prepare release file
+        run: |
+          cp artifacts/${{ matrix.rid }}/${{ matrix.bin }} artifacts/${{ matrix.rid }}/${{ matrix.release_bin }}
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: terraria-backend-win-x64-exe
-          path: Server/artifacts/win-x64/terraria-backend.exe
+          name: terraria-backend-${{ matrix.rid }}
+          path: Server/artifacts/${{ matrix.rid }}/${{ matrix.release_bin }}
           if-no-files-found: error
+
+  release:
+    name: Publish backend release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: terraria-backend-*
+          path: release-artifacts
+          merge-multiple: true
 
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: backend-latest
-          name: "Backend Binary win-x64 (latest)"
+          name: "Backend Binary (latest)"
           body: |
-            Auto-release from master branch.
-            Commit: ${{ github.sha }}
+            ## 后端
+
+            Python 后端打包的独立可执行文件，无需安装 Python 环境，下载对应平台的文件直接运行即可启动后端服务。
+
+            | 文件名 | 平台 |
+            |---|---|
+            | `terraria-backend-win-x64.exe` | Windows x64 |
+            | `terraria-backend-linux-x64` | Linux x64 |
+            | `terraria-backend-osx-x64` | macOS x64 (Intel) |
+
+            > 由 master 分支自动构建，Commit: ${{ github.sha }}
           prerelease: false
-          files: Server/artifacts/win-x64/terraria-backend.exe
+          files: release-artifacts/*
