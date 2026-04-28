@@ -166,7 +166,14 @@ namespace TerrariaManagerAgent.Services.Handlers
                 new { name = "数据库",   key = "databases", files = (object)dbFiles     },
             };
 
-            TShock.Log.Info($"[Agent] file_list: serverDir={serverDir}, worlds={worldFiles.Count}, configs={configFiles.Count}");
+            AgentLog.Debug("File", "list_completed",
+                ("msg_id", envelope.MsgId),
+                ("server_dir", serverDir),
+                ("worlds", worldFiles.Count),
+                ("configs", configFiles.Count),
+                ("logs", logFiles.Count),
+                ("plugins", pluginFiles.Count),
+                ("databases", dbFiles.Count));
 
             await _wsService.SendAsync(new
             {

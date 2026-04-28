@@ -123,8 +123,6 @@ namespace TerrariaManagerAgent.Services
 
                 AuditPanelOperation(envelope);
 
-                Console.WriteLine($"[Agent DEBUG] 收到消息类型: {envelope.Type}, MsgId: {envelope.MsgId}");
-
                 switch (envelope.Type)
                 {
                     case "cmd":                  await HandleCommand(envelope);                       break;
@@ -195,11 +193,16 @@ namespace TerrariaManagerAgent.Services
                     case "agent_character_list":   await _store.HandleCharacterList(envelope);          break;
                     case "agent_blacklist_add":    await _store.HandleBlacklistAdd(envelope);           break;
                     case "agent_blacklist_remove": await _store.HandleBlacklistRemove(envelope);        break;
+                    default:
+                        AgentLog.Warn("Command", "unknown_message_type",
+                            ("msg_id", envelope.MsgId),
+                            ("op", envelope.Type ?? "unknown"));
+                        break;
                 }
             }
             catch (Exception ex)
             {
-                TShock.Log.Error($"[Agent] 处理 JSON 失败: {ex.Message}");
+                AgentLog.Error("Command", "process_message_failed", ("error", ex.Message));
             }
         }
 
@@ -303,7 +306,12 @@ namespace TerrariaManagerAgent.Services
 
                         if (state.Suppressed > 0)
                         {
-                            TShock.Log.ConsoleInfo($"[Agent审计] 账号={operatorEmail} | 操作={detail} | 已合并 {state.Suppressed} 次重复请求");
+                            AgentLog.Audit("panel_request_merged",
+                                ("operator", operatorEmail),
+                                ("op", opType),
+                                ("msg_id", envelope.MsgId),
+                                ("detail", detail),
+                                ("merged_count", state.Suppressed));
                             state.Suppressed = 0;
                         }
 
@@ -311,7 +319,11 @@ namespace TerrariaManagerAgent.Services
                     }
                 }
 
-                TShock.Log.ConsoleInfo($"[Agent审计] 账号={operatorEmail} | 操作={detail}");
+                AgentLog.Audit("panel_request",
+                    ("operator", operatorEmail),
+                    ("op", opType),
+                    ("msg_id", envelope.MsgId),
+                    ("detail", detail));
             }
             catch
             {

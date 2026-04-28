@@ -133,7 +133,9 @@ namespace TerrariaManagerAgent.Services.Handlers
                         pc.Initialize();
                         reloaded.Add($"{asmName} v{pi.Version}");
                         found = true;
-                        TShock.Log.ConsoleInfo($"[Agent] 热重载 {asmName} v{pi.Version} 成功");
+                        AgentLog.Console("Plugin", "hot_reload_succeeded",
+                            ("assembly", asmName),
+                            ("version", pi.Version));
                     }
                 }
                 if (!found) reloaded.Add($"{asmName}（依赖库）");
@@ -141,7 +143,9 @@ namespace TerrariaManagerAgent.Services.Handlers
             catch (Exception ex)
             {
                 failed.Add($"{asmName}: {ex.Message}");
-                TShock.Log.Error($"[Agent] 热重载 {asmName} 失败: {ex.Message}");
+                AgentLog.Error("Plugin", "hot_reload_failed",
+                    ("assembly", asmName),
+                    ("error", ex.Message));
             }
         }
 
@@ -288,7 +292,7 @@ namespace TerrariaManagerAgent.Services.Handlers
             }
             catch (Exception ex)
             {
-                TShock.Log.Error($"[Agent] plugin_local_list 失败: {ex.Message}");
+                AgentLog.Error("Plugin", "local_list_failed", ("error", ex.Message));
             }
 
             // 补充伴生程序集（无 TerrariaPlugin 类的 DLL，如 xx.zh-CN.dll）
@@ -437,7 +441,7 @@ namespace TerrariaManagerAgent.Services.Handlers
             }
             catch (Exception ex)
             {
-                TShock.Log.Error($"[Agent] plugin_list_configs 扫描失败: {ex.Message}");
+                AgentLog.Error("Plugin", "list_configs_failed", ("error", ex.Message));
             }
 
             await _wsService.SendAsync(new {
@@ -583,14 +587,16 @@ namespace TerrariaManagerAgent.Services.Handlers
                         if (await TryInstallFromAllPluginsAsync(asmToInstall))
                         {
                             fallbackInstalledDependencies.Add(asmToInstall);
-                            TShock.Log.ConsoleInfo($"[Agent] {asmToInstall} 从 get_all_plugins 回退安装成功");
+                            AgentLog.Console("Plugin", "fallback_install_succeeded", ("assembly", asmToInstall));
                             continue;
                         }
 
                         if (isRoot) throw;
 
                         skippedDependencies.Add($"{asmToInstall}(404)");
-                        TShock.Log.ConsoleInfo($"[Agent] 依赖 {asmToInstall} 下载 404，已跳过");
+                        AgentLog.Console("Plugin", "dependency_download_skipped",
+                            ("assembly", asmToInstall),
+                            ("reason", "404"));
                         continue;
                     }
 
@@ -685,7 +691,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                     }
                     loadedAsms.Remove(assemblyName);
                     unloaded = true;
-                    TShock.Log.ConsoleInfo($"[Agent] 卸载 {assemblyName} 成功");
+                    AgentLog.Console("Plugin", "uninstall_succeeded", ("assembly", assemblyName));
                 }
 
                 var dllPath = Path.Combine(pluginsDir, assemblyName + ".dll");
@@ -868,7 +874,9 @@ namespace TerrariaManagerAgent.Services.Handlers
                 catch (Exception ex)
                 {
                     failed.Add($"{asmToUpdate}: {ex.Message}");
-                    TShock.Log.Error($"[Agent] 更新 {asmToUpdate} 失败: {ex.Message}");
+                    AgentLog.Error("Plugin", "update_failed",
+                        ("assembly", asmToUpdate),
+                        ("error", ex.Message));
                 }
             }
 
@@ -1108,7 +1116,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                 catch (Exception hotEx)
                 {
                     hotReloadMsg = $"已写入 {installed.Count} 个文件，热重载失败（{hotEx.Message}），重启服务器后生效";
-                    TShock.Log.Error($"[Agent] APM 热重载失败: {hotEx.Message}");
+                    AgentLog.Error("Plugin", "apm_hot_reload_failed", ("error", hotEx.Message));
                 }
 
                 await _wsService.SendAsync(new {

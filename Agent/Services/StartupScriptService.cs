@@ -33,7 +33,7 @@ namespace TerrariaManagerAgent.Services
                     var content = File.ReadAllText(path, System.Text.Encoding.UTF8);
                     var cleaned = isWindows ? RemoveWinRestartLoop(content) : RemoveShRestartLoop(content);
                     File.WriteAllText(path, cleaned, new System.Text.UTF8Encoding(false));
-                    TShock.Log.Info($"[Agent] 重启后已还原启动脚本: {path}");
+                    AgentLog.Info("StartupScript", "restart_script_restored", ("path", path));
                     break;
                 }
 
@@ -41,7 +41,7 @@ namespace TerrariaManagerAgent.Services
             }
             catch (Exception ex)
             {
-                TShock.Log.Warn($"[Agent] 还原启动脚本失败: {ex.Message}");
+                AgentLog.Warn("StartupScript", "restore_failed", ("error", ex.Message));
             }
         }
 

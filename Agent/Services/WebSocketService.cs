@@ -18,6 +18,7 @@ namespace TerrariaManagerAgent.Services
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
         private readonly string _url;       // 已拼入 agent_key 参数
+        private readonly string _endpointDisplay;
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         private bool _isConnecting = false;
         private bool _shouldReconnect = true;
@@ -27,7 +28,8 @@ namespace TerrariaManagerAgent.Services
         public WebSocketService(string baseUrl, string agentKey)
         {
             // 将 agent_key 作为查询参数拼入 URL
-            _url = $"{baseUrl.TrimEnd('/')}?agent_key={Uri.EscapeDataString(agentKey)}";
+            _endpointDisplay = baseUrl.TrimEnd('/');
+            _url = $"{_endpointDisplay}?agent_key={Uri.EscapeDataString(agentKey)}";
             _cts = new CancellationTokenSource();
         }
 
@@ -49,7 +51,7 @@ namespace TerrariaManagerAgent.Services
 
                     if (_shouldReconnect && !_cts.Token.IsCancellationRequested)
                     {
-                        SafeLog(() => TShock.Log.ConsoleInfo("[Agent] WS 断开，5秒后重连..."));
+                        SafeLog(() => AgentLog.Console("WebSocket", "connection_lost", ("retry_after_seconds", 5)));
                         await Task.Delay(5000, _cts.Token);
                     }
                 }
@@ -57,7 +59,7 @@ namespace TerrariaManagerAgent.Services
                 catch (ObjectDisposedException) { break; }
                 catch (Exception ex)
                 {
-                    SafeLog(() => TShock.Log.Error($"[Agent] WS 循环异常: {ex.Message}"));
+                    SafeLog(() => AgentLog.Error("WebSocket", "connection_loop_failed", ("error", ex.Message)));
                     try { await Task.Delay(5000, _cts.Token); }
                     catch (OperationCanceledException) { break; }
                 }
@@ -77,7 +79,7 @@ namespace TerrariaManagerAgent.Services
                     _ws?.Dispose();
                     _ws = new ClientWebSocket();
                     await _ws.ConnectAsync(new Uri(_url), _cts.Token);
-                    SafeLog(() => TShock.Log.Info("[Agent] 已连接至管理后端"));
+                    SafeLog(() => AgentLog.Info("WebSocket", "connected", ("endpoint", _endpointDisplay)));
                     _isConnecting = false;
                     return;
                 }
@@ -85,12 +87,15 @@ namespace TerrariaManagerAgent.Services
                 {
                     retry++;
                     _isConnecting = false;
-                    SafeLog(() => TShock.Log.Error($"[Agent] 连接尝试 {retry}/5 失败: {ex.Message}"));
+                    SafeLog(() => AgentLog.Warn("WebSocket", "connect_failed",
+                        ("endpoint", _endpointDisplay),
+                        ("retry", $"{retry}/5"),
+                        ("error", ex.Message)));
                     try { await Task.Delay(5000, _cts.Token); }
                     catch (OperationCanceledException) { return; }
                 }
             }
-            throw new Exception("无法建立 WS 连接");
+            throw new Exception("无法建立 WebSocket 连接");
         }
 
         private async Task ReceiveLoop()
@@ -121,7 +126,7 @@ namespace TerrariaManagerAgent.Services
             catch (ObjectDisposedException) { /* TShock 正在关闭，忽略 */ }
             catch (Exception ex)
             {
-                SafeLog(() => TShock.Log.Error($"[Agent] 接收指令失败: {ex.Message}"));
+                SafeLog(() => AgentLog.Error("WebSocket", "receive_failed", ("error", ex.Message)));
             }
         }
 
@@ -141,7 +146,7 @@ namespace TerrariaManagerAgent.Services
             catch (OperationCanceledException) { /* 关闭中，忽略 */ }
             catch (Exception ex)
             {
-                SafeLog(() => TShock.Log.Error($"[Agent] 发送失败: {ex.Message}"));
+                SafeLog(() => AgentLog.Error("WebSocket", "send_failed", ("error", ex.Message)));
             }
             finally
             {

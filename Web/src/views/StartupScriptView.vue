@@ -151,7 +151,7 @@
                     <option value="">默认（随机）</option>
                     <option value="random">随机</option>
                     <option value="0">腐化</option>
-                    <option value="1">蹩红</option>
+                    <option value="1">猩红</option>
                   </select>
                 </div>
               </div>
@@ -180,6 +180,18 @@
               </div>
             </div>
 
+            <!-- 自动重启 -->
+            <div class="ss-section">
+              <div class="ss-section-title">自动重启</div>
+              <label class="ss-check">
+                <input type="checkbox" v-model="params.autoRestart" @change="syncModified"/>
+                <span>
+                  崩溃/退出后自动重启
+                  <small>使用循环脚本包裹启动命令，适配配置了"不保存关闭"/"重启"的外部脚本。</small>
+                </span>
+              </label>
+            </div>
+            
             <!-- TShock 配置 -->
             <div class="ss-section">
               <div class="ss-section-title">TShock 配置</div>
@@ -246,17 +258,6 @@
               </div>
             </div>
 
-            <!-- 自动重启 -->
-            <div class="ss-section">
-              <div class="ss-section-title">自动重启</div>
-              <label class="ss-check ss-check-lg">
-                <input type="checkbox" v-model="params.autoRestart" @change="syncModified"/>
-                <span>
-                  崩溃/退出后自动重启
-                  <small>使用循环脚本包裹启动命令，适配配置了"不保存关闭"/"重启"的外部脚本。</small>
-                </span>
-              </label>
-            </div>
           </div>
 
           <!-- 预览 -->
@@ -602,9 +603,6 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
 .ss-check input { margin-top: 3px; flex-shrink: 0; cursor: pointer; }
 .ss-check span { font-size: 13px; color: #1e293b; }
 .ss-check small { display: block; font-size: 11px; color: #94a3b8; margin-top: 1px; }
-.ss-check-lg span { font-size: 14px; font-weight: 600; }
-.ss-check-lg small { font-size: 12px; }
-
 /* 预览 */
 .ss-right { position: sticky; top: 0; background: #0f172a; border-radius: 12px; overflow: hidden; }
 .ss-preview-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1e293b; }

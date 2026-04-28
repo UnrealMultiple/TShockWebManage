@@ -47,6 +47,24 @@ jobs:
           path: artifacts/AgentPluginRelease/TerrariaManagerAgent.dll
           if-no-files-found: error
 
+      - name: Remove legacy release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view agent-latest --repo $env:GITHUB_REPOSITORY 1>$null 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Release agent-latest does not exist yet."
+            exit 0
+          }
+          gh release delete-asset agent-latest TerrariaAgent.dll --yes --repo $env:GITHUB_REPOSITORY 1>$null 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Removed legacy asset TerrariaAgent.dll."
+            exit 0
+          }
+          Write-Host "Legacy asset TerrariaAgent.dll was not present."
+          exit 0
+
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:

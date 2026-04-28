@@ -13,7 +13,7 @@ namespace TerrariaManagerAgent.Services
     {
         public static AgentConfig LoadConfig(string savePath)
         {
-            var path = Path.Combine(savePath, "agent_config.json");
+            var path = Path.Combine(savePath, "TerrariaManagerAgent.json");
             AgentConfig config;
             bool changed = false;
 
@@ -30,7 +30,9 @@ namespace TerrariaManagerAgent.Services
                 }
                 catch (Exception ex)
                 {
-                    TShock.Log.Error($"[Agent] 读取配置失败，使用默认值: {ex.Message}");
+                    AgentLog.Error("Config", "load_failed_use_defaults",
+                        ("path", path),
+                        ("error", ex.Message));
                     config = new AgentConfig();
                 }
             }
@@ -39,7 +41,7 @@ namespace TerrariaManagerAgent.Services
             {
                 config.AgentKey = Guid.NewGuid().ToString("N");
                 changed = true;
-                TShock.Log.Info("[Agent] 首次启动，已自动生成 agent_key");
+                AgentLog.Info("Config", "agent_key_generated", ("path", path));
             }
 
             var lvl = (config.AuditLevel ?? string.Empty).Trim().ToLowerInvariant();
@@ -58,8 +60,11 @@ namespace TerrariaManagerAgent.Services
                 File.WriteAllText(path, JsonConvert.SerializeObject(config, Formatting.Indented));
             }
 
-            TShock.Log.ConsoleInfo($"| Agent Key : {config.AgentKey,-36} |");
-            TShock.Log.ConsoleInfo($"| Audit Lv  : {config.AuditLevel,-36} |");
+            AgentLog.Console("Config", "loaded",
+                ("backend_url", config.BackendUrl),
+                ("agent_key", config.AgentKey),
+                ("audit_level", config.AuditLevel),
+                ("debug_enabled", config.DebugEnabled));
 
             return config;
         }

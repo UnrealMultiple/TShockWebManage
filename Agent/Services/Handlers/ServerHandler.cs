@@ -35,7 +35,11 @@ namespace TerrariaManagerAgent.Services.Handlers
                 "restart"    => "重启",
                 _            => action
             };
-            TShock.Log.ConsoleInfo($"[Agent] 面板操作: {operatorId} 执行了「{actionLabel}」");
+            AgentLog.Audit("server_control_requested",
+                ("msg_id", envelope.MsgId),
+                ("operator", operatorId),
+                ("action", action),
+                ("action_label", actionLabel));
 
             switch (action)
             {
@@ -140,7 +144,7 @@ namespace TerrariaManagerAgent.Services.Handlers
             }
             catch (Exception ex)
             {
-                TShock.Log.Warn($"[Agent] 注入重启循环失败: {ex.Message}");
+                AgentLog.Warn("ServerControl", "inject_restart_loop_failed", ("error", ex.Message));
             }
         }
 

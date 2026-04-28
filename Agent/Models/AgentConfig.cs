@@ -28,5 +28,11 @@ namespace TerrariaManagerAgent.Models
         /// </summary>
         [JsonProperty("audit_level")]
         public string AuditLevel { get; set; } = "write";
+
+        /// <summary>
+        /// 调试日志开关。默认关闭，仅排查 Agent 问题时临时开启。
+        /// </summary>
+        [JsonProperty("debug_enabled")]
+        public bool DebugEnabled { get; set; } = false;
     }
 }

@@ -43,7 +43,7 @@ namespace TerrariaManagerAgent.Services
             }
             catch (Exception ex)
             {
-                TShock.Log.Warn($"[Agent] StatsTracker 表创建失败: {ex.Message}");
+                AgentLog.Warn("Stats", "init_failed", ("db", _dbPath), ("error", ex.Message));
             }
         }
 
@@ -55,7 +55,9 @@ namespace TerrariaManagerAgent.Services
 
             // 旧版本用 agent_stats.db，同一数据格式可直接复制迁移。
             File.Copy(legacyDbPath, _dbPath, overwrite: false);
-            TShock.Log.Info($"[Agent] StatsTracker 数据库已迁移到 {NewDbFileName}");
+            AgentLog.Info("Stats", "legacy_db_migrated",
+                ("from", legacyDbPath),
+                ("to", _dbPath));
         }
 
         private static SqliteConnection OpenDb()

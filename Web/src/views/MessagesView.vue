@@ -206,13 +206,14 @@ const MSG_TYPE_LABELS = {
   invite_accepted: '邀请已接受',
   invite_rejected: '邀请已拒绝',
   invite_expired: '邀请已过期',
+  invite_result: '邀请结果',
   system: '系统通知',
   announcement: '公告',
 }
 
 function msgTypeLabel(type) {
   const t = type == null ? '' : (typeof type === 'string' ? type : String(type))
-  return MSG_TYPE_LABELS[t] || t || '系统通知'
+  return MSG_TYPE_LABELS[t] || '系统通知'
 }
 
 // 申请状态 → 中文标签
@@ -601,6 +602,7 @@ onMounted(async () => {
 .msg-type-join_request_rejected  { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
 .msg-type-invite_accepted        { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
 .msg-type-invite_rejected        { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+.msg-type-invite_result,
 .msg-type-invite_sent,
 .msg-type-invite                 { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
 .msg-type-request                { background: #faf5ff; color: #6d28d9; border-color: #ddd6fe; }

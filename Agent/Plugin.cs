@@ -22,7 +22,7 @@ namespace TerrariaManagerAgent
         private readonly CancellationTokenSource _pluginCts = new CancellationTokenSource();
 
         public override string Name => "TerrariaManagerAgent";
-        public override Version Version => new Version(1, 2, 2);
+        public override Version Version => new Version(1, 2, 3);
         public override string Author => "熙恩";
         public override string Description => "TShock 远程管理代理插件";
 
@@ -42,6 +42,7 @@ namespace TerrariaManagerAgent
                 _wsService = new WebSocketService(config.BackendUrl, config.AgentKey);
                 _cmdHandler = new CommandHandler(_wsService);
                 _runtimeService = new RuntimeBroadcastService(_wsService);
+                AgentLog.SetDebugEnabled(config.DebugEnabled);
                 CommandHandler.SetAuditLevel(config.AuditLevel);
                 _currentBackendUrl = config.BackendUrl ?? string.Empty;
                 _currentAgentKey = config.AgentKey ?? string.Empty;
@@ -69,11 +70,13 @@ namespace TerrariaManagerAgent
                 // 7. 如果是重启后首次启动，还原启动脚本（移除临时循环）
                 StartupScriptService.CleanupRestartScript();
 
-                TShock.Log.Info("[Agent] 插件已初始化：WebSocket 服务与指令处理器已就绪");
+                AgentLog.Info("Lifecycle", "plugin_initialized",
+                    ("backend_url", _currentBackendUrl),
+                    ("audit_level", config.AuditLevel));
             }
             catch (Exception ex)
             {
-                TShock.Log.Error($"[Agent] 初始化异常: {ex.Message}");
+                AgentLog.Error("Lifecycle", "plugin_initialize_failed", ("error", ex.Message));
             }
         }
 
@@ -104,11 +107,11 @@ namespace TerrariaManagerAgent
                     // 释放服务资源（关闭连接，取消 Token）
                     _wsService?.Dispose();
                     
-                    TShock.Log.Info("[Agent] 插件已安全卸载，后台连接已关闭");
+                    AgentLog.Info("Lifecycle", "plugin_disposed");
                 }
                 catch (Exception ex)
                 {
-                    TShock.Log.Error($"[Agent] 卸载时发生错误: {ex.Message}");
+                    AgentLog.Error("Lifecycle", "plugin_dispose_failed", ("error", ex.Message));
                 }
             }
             base.Dispose(disposing);
@@ -119,6 +122,7 @@ namespace TerrariaManagerAgent
             try
             {
                 var config = AgentConfigService.LoadConfig(TShock.SavePath);
+                AgentLog.SetDebugEnabled(config.DebugEnabled);
                 CommandHandler.SetAuditLevel(config.AuditLevel);
 
                 var backendChanged = !string.Equals(_currentBackendUrl, config.BackendUrl ?? string.Empty, StringComparison.OrdinalIgnoreCase);
@@ -130,18 +134,24 @@ namespace TerrariaManagerAgent
                 if (backendChanged || agentKeyChanged)
                 {
                     args.Player?.SendWarningMessage("[Agent] 配置已重读，但 BackendUrl/AgentKey 变更需重启服务器后生效");
-                    TShock.Log.Warn("[Agent] 已重读配置：BackendUrl 或 AgentKey 发生变化，需重启服务器后生效");
+                    AgentLog.Warn("Config", "reload_requires_restart",
+                        ("backend_changed", backendChanged),
+                        ("agent_key_changed", agentKeyChanged),
+                        ("audit_level", config.AuditLevel),
+                        ("debug_enabled", config.DebugEnabled));
                 }
                 else
                 {
                     args.Player?.SendSuccessMessage("[Agent] 配置已重读并生效（AuditLevel 已更新）");
-                    TShock.Log.Info("[Agent] 已通过 /reload 重读配置并应用 AuditLevel");
+                    AgentLog.Info("Config", "reload_applied",
+                        ("audit_level", config.AuditLevel),
+                        ("debug_enabled", config.DebugEnabled));
                 }
             }
             catch (Exception ex)
             {
                 args.Player?.SendErrorMessage($"[Agent] 重读配置失败: {ex.Message}");
-                TShock.Log.Error($"[Agent] ReloadEvent 处理异常: {ex.Message}");
+                AgentLog.Error("Config", "reload_failed", ("error", ex.Message));
             }
         }
     }

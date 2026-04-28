@@ -1648,8 +1648,10 @@ namespace TerrariaManagerAgent.Services.Handlers
                 TShock.UserAccounts.RemoveUserAccount(account);
                 AgentLocalStore.DeleteCharacter(account.Name);
 
-                string logEntry = $"[面板操作] 角色删除 — 请求账号: {username}, 实际账号: {account.Name}, 操作者: {operatorEmail}, 时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
-                TShock.Log.Info(logEntry);
+                AgentLog.Audit("character_delete_requested",
+                    ("operator", operatorEmail),
+                    ("requested_name", username),
+                    ("matched_name", account.Name));
 
                 await _wsService.SendAsync(new
                 {
