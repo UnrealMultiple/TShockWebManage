@@ -27,10 +27,6 @@ jobs:
             rid: linux-x64
             bin: terraria-backend
             release_bin: terraria-backend-linux-x64
-          - os: macos-13
-            rid: osx-x64
-            bin: terraria-backend
-            release_bin: terraria-backend-osx-x64
 
     defaults:
       run:
@@ -110,7 +106,6 @@ jobs:
             |---|---|
             | `terraria-backend-win-x64.exe` | Windows x64 |
             | `terraria-backend-linux-x64` | Linux x64 |
-            | `terraria-backend-osx-x64` | macOS x64 (Intel) |
 
             > 由 master 分支自动构建，Commit: ${{ github.sha }}
           prerelease: false
