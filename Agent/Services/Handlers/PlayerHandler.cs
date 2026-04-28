@@ -1545,6 +1545,8 @@ namespace TerrariaManagerAgent.Services.Handlers
             var username = jobj["username"]?.ToString() ?? "";
             var password = jobj["password"]?.ToString() ?? "";
             var panelEmail = jobj["panel_user_email"]?.ToString() ?? "";
+            var panelUserId = jobj["panel_user_id"]?.Value<long>() ?? 0;
+            var registerLimit = jobj["register_limit"]?.Value<int>() ?? 1;
 
             if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
             {
@@ -1569,12 +1571,19 @@ namespace TerrariaManagerAgent.Services.Handlers
             {
                 if (TShock.UserAccounts.GetUserAccountByName(username) != null)
                     throw new Exception($"用户名 \"{username}\" 已存在");
+                if (panelUserId <= 0)
+                    throw new Exception("面板账号状态异常");
+                if (AgentLocalStore.CharacterExists(username))
+                    throw new Exception("该游戏账号已绑定到面板账号，无法重复注册");
+                if (registerLimit > 0 && AgentLocalStore.CountCharacters(panelUserId) >= registerLimit)
+                    throw new Exception($"当前账号可注册角色已达上限（{registerLimit}）");
 
                 var account = new TShockAPI.DB.UserAccount();
                 account.Name = username;
                 account.Group = "default";
                 account.CreateBCryptHash(password);
                 TShock.UserAccounts.AddUserAccount(account);
+                var binding = AgentLocalStore.UpsertCharacter(panelUserId, panelEmail, username, "register_user");
 
                 await _wsService.SendAsync(new
                 {
@@ -1587,7 +1596,9 @@ namespace TerrariaManagerAgent.Services.Handlers
                         success = true,
                         msg = $"角色 {username} 注册成功",
                         panel_user_email = panelEmail,
-                        username
+                        panel_user_id = panelUserId,
+                        username,
+                        registered_at = binding.RegisteredAt
                     }
                 });
             }
@@ -1635,6 +1646,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                     throw new Exception($"游戏账号 \"{CanonicalizeAccountName(username)}\" 不存在");
 
                 TShock.UserAccounts.RemoveUserAccount(account);
+                AgentLocalStore.DeleteCharacter(account.Name);
 
                 string logEntry = $"[面板操作] 角色删除 — 请求账号: {username}, 实际账号: {account.Name}, 操作者: {operatorEmail}, 时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
                 TShock.Log.Info(logEntry);
@@ -1794,6 +1806,18 @@ namespace TerrariaManagerAgent.Services.Handlers
                     msg_id = Guid.NewGuid().ToString("N"),
                     timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                     payload = new { ref_id = envelope.MsgId, success = false, msg = "参数不完整" }
+                });
+                return;
+            }
+
+            if (AgentLocalStore.CharacterExists(username))
+            {
+                await _wsService.SendAsync(new
+                {
+                    type = "send_bind_code_resp",
+                    msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = "该游戏账号已绑定到面板账号，无法重复绑定" }
                 });
                 return;
             }

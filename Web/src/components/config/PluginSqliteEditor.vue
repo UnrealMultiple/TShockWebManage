@@ -84,11 +84,14 @@
 
 <script setup>
 import { ref, watch, onMounted } from 'vue'
+import { useFeedback } from '@/composables/useFeedback'
 
 const props = defineProps({
   agentKey: String,
   dbPath: String,
 })
+
+const { toast, dialog } = useFeedback()
 
 const tables = ref([])
 const loadingTables = ref(false)
@@ -251,12 +254,18 @@ async function saveEdit() {
 }
 
 async function openDeleteRow(row) {
-  if (!confirm('确定要删除这行数据吗？')) return
+  const ok = await dialog.confirm({
+    title: '删除数据行',
+    message: '确定要删除这行数据吗？',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await wsDelete(activeTable.value, row._rowid)
     await selectTable(activeTable.value)
   } catch (e) {
-    alert('删除失败: ' + e.message)
+    toast.error('删除失败: ' + e.message)
   }
 }
 

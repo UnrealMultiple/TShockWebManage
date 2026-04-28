@@ -1,9 +1,8 @@
 <template>
   <div class="pg-page">
     <!-- 页头 -->
-    <div class="page-header">
-      <h1 class="page-title">面板权限组管理</h1>
-      <div class="page-header-right">
+    <PageHeader title="面板权限组管理" heading-tag="h1">
+      <template #actions>
         <button class="btn btn-sm btn-outline" @click="loadGroups" :disabled="loading">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;flex-shrink:0"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.18"/></svg>
           {{ loading ? '加载中…' : '刷新' }}
@@ -12,8 +11,8 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           新建权限组
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="pg-body">
 
@@ -317,10 +316,13 @@ import {
   deletePanelGroup,
   getServer,
 } from '@/api/servers'
+import { useFeedback } from '@/composables/useFeedback'
+import PageHeader from '@/components/PageHeader.vue'
 
 // ── 注入全局状态 ──────────────────────────────────────────────────
 const activeServer = inject('activeServer', ref(null))
 const canManage    = inject('canManageActiveServer', ref(false))
+const { toast } = useFeedback()
 
 const isOwner = computed(() => {
   const s = activeServer.value
@@ -343,6 +345,8 @@ const PANEL_PERMISSION_PLAN = [
       { value: 'panel.characters', label: '我的角色', desc: '允许访问角色相关页面。' },
       { value: 'panel.inventory.view.self', label: '查看自己背包', desc: '允许查看自己角色背包（只读）。' },
       { value: 'panel.inventory.view.others', label: '查看他人背包', desc: '允许查看其他角色背包（只读）。' },
+      { value: 'panel.announcements', label: '接收服务器公告', desc: '允许接收平台方发往本服务器的公告。' },
+      { value: 'panel.blacklist', label: '黑名单管理', desc: '管理本服务器黑名单并提交平台云黑。' },
     ],
   },
   {
@@ -544,7 +548,7 @@ async function doDelete() {
     deleteTarget.value = null
     await loadGroups()
   } catch (e) {
-    alert(e.message || '删除失败')
+    toast.error(e.message || '删除失败')
   } finally {
     deleting.value = false
   }
@@ -644,33 +648,6 @@ async function openMembers(g) {
   height: 100%;
   overflow: hidden;
   background: #f1f5f9;
-}
-
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 28px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.05);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  gap: 12px;
-  z-index: 10;
-}
-
-.page-title {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 700;
-  color: #0f172a;
-  letter-spacing: -0.01em;
-}
-
-.page-header-right {
-  display: flex;
-  gap: 8px;
 }
 
 .pg-body {
@@ -1271,10 +1248,6 @@ async function openMembers(g) {
 }
 
 @media (max-width: 768px) {
-  .page-header {
-    padding: 18px 14px 14px;
-  }
-
   .pg-body {
     padding: 14px;
   }

@@ -1,11 +1,7 @@
 <template>
   <div class="bans-page">
-    <div class="page-header">
-      <div class="page-header-left">
-        <h1 class="page-title">用户封禁管理</h1>
-        <span class="page-subtitle">TShock Ban Ticket 管理</span>
-      </div>
-      <div class="page-header-right">
+    <PageHeader title="用户封禁管理" subtitle="TShock Ban Ticket 管理" heading-tag="h1">
+      <template #actions>
         <button class="cfg-btn cfg-btn-outline" @click="loadBans" :disabled="loading || !agentOnline || !activeServerKey">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.18"/></svg>
           {{ loading ? '加载中…' : '刷新列表' }}
@@ -14,13 +10,11 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           新建封禁
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="bans-body">
-      <div v-if="!agentOnline" class="state-box state-offline">
-        <span>Agent 未连接，无法管理封禁。</span>
-      </div>
+      <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理封禁。请先启动服务器。" />
 
       <div v-else-if="!activeServerKey" class="state-box state-empty">
         <p>请先在左侧选择一个服务器</p>
@@ -217,6 +211,8 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 const props = defineProps({
   agentOnline: { type: Boolean, default: false },
@@ -466,31 +462,6 @@ watch([searchQuery, statusFilter], () => {
   background: radial-gradient(circle at 15% 0%, #eff6ff 0, #f8fafc 35%, #f8fafc 100%);
 }
 
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 28px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.page-header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.page-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .cfg-btn {
   display: inline-flex;
   align-items: center;
@@ -533,23 +504,6 @@ watch([searchQuery, statusFilter], () => {
 
 .cfg-btn-primary:hover:not(:disabled) {
   background: #2563eb;
-}
-
-.page-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.page-subtitle {
-  font-size: 12px;
-  color: #64748b;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
-  padding: 2px 8px;
-  border-radius: 20px;
-  font-family: monospace;
 }
 
 .bans-body {
@@ -621,12 +575,6 @@ watch([searchQuery, statusFilter], () => {
   border-radius: 10px;
   font-size: 14px;
   margin-bottom: 16px;
-}
-
-.state-offline {
-  background: #fff7ed;
-  color: #92400e;
-  border: 1px solid #fed7aa;
 }
 
 .state-empty {
@@ -968,7 +916,6 @@ watch([searchQuery, statusFilter], () => {
 }
 
 @media (max-width: 900px) {
-  .page-header,
   .bans-body {
     padding-left: 16px;
     padding-right: 16px;

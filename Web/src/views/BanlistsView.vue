@@ -1,11 +1,7 @@
 <template>
   <div class="bl-page">
-    <div class="page-header">
-      <div class="page-header-left">
-        <h1 class="page-title">物品/弹幕/图格封禁管理</h1>
-        <span class="page-subtitle">TShock 物品·弹幕·图格黑名单</span>
-      </div>
-      <div class="page-header-right">
+    <PageHeader title="物品/弹幕/图格封禁管理" subtitle="TShock 物品·弹幕·图格黑名单" heading-tag="h1">
+      <template #actions>
         <button class="btn btn-sm btn-outline" @click="loadData" :disabled="loading || !agentOnline || !activeServerKey">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;flex-shrink:0">
             <polyline points="1 4 1 10 7 10"/>
@@ -32,18 +28,11 @@
           </svg>
           {{ saving ? '保存中…' : '保存' }}
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="bl-body">
-      <div v-if="!agentOnline" class="state-box state-offline">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        <span>Agent 未连接，无法管理封禁列表。请先启动服务器。</span>
-      </div>
+      <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理封禁列表。请先启动服务器。" />
 
       <div v-else-if="!activeServerKey" class="state-box state-empty">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -381,6 +370,8 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getListByType, getZhName, loadTerrariaIDs } from '@/config/terraria_ids'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 const props = defineProps({
   agentOnline: { type: Boolean, default: false },
@@ -862,47 +853,6 @@ watch(activeTab, () => {
   background: #f8fafc;
 }
 
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 28px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.page-header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.page-header-right {
-  display: flex;
-  gap: 8px;
-}
-
-.page-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.page-subtitle {
-  font-size: 12px;
-  color: #64748b;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
-  padding: 2px 8px;
-  border-radius: 20px;
-  font-family: monospace;
-}
-
 .bl-body {
   flex: 1;
   overflow-y: auto;
@@ -930,16 +880,6 @@ watch(activeTab, () => {
   width: 20px;
   height: 20px;
   flex-shrink: 0;
-}
-
-.state-offline {
-  background: #fff7ed;
-  color: #92400e;
-  border: 1px solid #fed7aa;
-}
-
-.state-offline svg {
-  stroke: #f97316;
 }
 
 .state-empty {
@@ -1613,16 +1553,9 @@ watch(activeTab, () => {
 }
 
 @media (max-width: 860px) {
-  .page-header,
   .bl-body {
     padding-left: 14px;
     padding-right: 14px;
-  }
-
-  .page-header-right {
-    width: 100%;
-    justify-content: flex-end;
-    flex-wrap: wrap;
   }
 
   .modal-box-wide {

@@ -2,11 +2,11 @@ import asyncio
 import json
 import os
 import random
+import re
 import secrets
 import sqlite3
-import subprocess
-import sys
 import time
+import unicodedata
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.core.config import AUTH_DB_PATH
 from app.core.utils import verify_token, new_id, now_ms
@@ -16,12 +16,13 @@ from app.services.ws_manager import manager
 _bind_codes: dict = {}
 BIND_CODE_EXPIRE = 600  # 10 分钟
 
-# 本地进程追踪: {agent_key: subprocess.Popen}
-_local_processes: dict = {}
-
 router = APIRouter()
 
 WEB_CLIENT_EMAILS = {}
+
+DEFAULT_CHARACTER_NAME_REGEX = r"^[\u4e00-\u9fffA-Za-z0-9:/\[\]]+$"
+DEFAULT_CHARACTER_NAME_MAX_LENGTH = 20
+BLOCKED_CHARACTER_NAME_CATEGORIES = {"Cc", "Cf", "Zs", "Zl", "Zp"}
 
 
 def _normalize_agent_key(v: str) -> str:
@@ -61,15 +62,15 @@ def has_console_access(email: str, agent_key: str) -> bool:
                 return True
             # 检查面板权限组是否含 panel.console 或通配权限
             pg_row = conn.execute(
-                "SELECT spg.id FROM server_member_panel_groups smpg "
-                "JOIN server_panel_groups spg ON spg.id = smpg.group_id "
+                "SELECT spg.id FROM server_member_roles smpg "
+                "JOIN server_roles spg ON spg.id = smpg.group_id "
                 "WHERE smpg.server_id=? AND smpg.user_id=?",
                 (server_id, user_id),
             ).fetchone()
             if not pg_row:
                 return False
             perms = conn.execute(
-                "SELECT permission FROM server_panel_group_perms WHERE group_id=?",
+                "SELECT permission FROM server_role_permissions WHERE group_id=?",
                 (pg_row[0],),
             ).fetchall()
             for (p,) in perms:
@@ -109,15 +110,15 @@ def has_panel_permission(email: str, agent_key: str, permission: str) -> bool:
                 return True
 
             pg_row = conn.execute(
-                "SELECT spg.id FROM server_member_panel_groups smpg "
-                "JOIN server_panel_groups spg ON spg.id = smpg.group_id "
+                "SELECT spg.id FROM server_member_roles smpg "
+                "JOIN server_roles spg ON spg.id = smpg.group_id "
                 "WHERE smpg.server_id=? AND smpg.user_id=?",
                 (server_id, user_id),
             ).fetchone()
             if not pg_row:
                 return False
             perms = conn.execute(
-                "SELECT permission FROM server_panel_group_perms WHERE group_id=?",
+                "SELECT permission FROM server_role_permissions WHERE group_id=?",
                 (pg_row[0],),
             ).fetchall()
             for (p,) in perms:
@@ -142,7 +143,7 @@ def is_character_owner(email: str, agent_key: str, username: str) -> bool:
                 """
                 SELECT 1
                 FROM users u
-                JOIN game_characters gc ON gc.user_id = u.id
+                JOIN agent_character_bindings_cache gc ON gc.user_id = u.id
                 WHERE u.email=? COLLATE NOCASE
                   AND gc.agent_key=?
                   AND gc.character_name=? COLLATE NOCASE
@@ -208,13 +209,64 @@ def get_user_register_quota(agent_key: str, user_id: int):
                 limit = 1
             limit = max(0, min(50, limit))
             count_row = conn.execute(
-                "SELECT COUNT(*) FROM game_characters WHERE agent_key=? AND user_id=?",
+                "SELECT COUNT(*) FROM agent_character_bindings_cache WHERE agent_key=? AND user_id=?",
                 (agent_key, user_id),
             ).fetchone()
             count = int(count_row[0] if count_row and count_row[0] is not None else 0)
         return limit, count
     except Exception:
         return 1, 0
+
+
+def get_character_name_policy(agent_key: str):
+    """返回当前服务器的玩家名字策略。"""
+    agent_key = _normalize_agent_key(agent_key)
+    if not agent_key:
+        return DEFAULT_CHARACTER_NAME_REGEX, DEFAULT_CHARACTER_NAME_MAX_LENGTH
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT character_name_regex, character_name_max_length FROM servers WHERE agent_key=? LIMIT 1",
+                (agent_key,),
+            ).fetchone()
+        pattern = str(row[0] if row and row[0] else DEFAULT_CHARACTER_NAME_REGEX).strip()
+        if not pattern:
+            pattern = DEFAULT_CHARACTER_NAME_REGEX
+        try:
+            max_length = int(row[1] if row and row[1] is not None else DEFAULT_CHARACTER_NAME_MAX_LENGTH)
+        except Exception:
+            max_length = DEFAULT_CHARACTER_NAME_MAX_LENGTH
+        max_length = max(1, min(50, max_length))
+        return pattern, max_length
+    except Exception:
+        return DEFAULT_CHARACTER_NAME_REGEX, DEFAULT_CHARACTER_NAME_MAX_LENGTH
+
+
+def find_blocked_character_name_char(value: str):
+    for ch in value or "":
+        if unicodedata.category(ch) in BLOCKED_CHARACTER_NAME_CATEGORIES:
+            return ch
+    return None
+
+
+def validate_character_name_policy(agent_key: str, username: str):
+    username = "" if username is None else str(username)
+    pattern, max_length = get_character_name_policy(agent_key)
+    if not username:
+        return False, "用户名不能为空"
+    if username != username.strip():
+        return False, "玩家名字不能包含前后空白字符"
+    if find_blocked_character_name_char(username) is not None:
+        return False, "玩家名字不能包含空白、零宽字符、控制字符或不可见格式字符"
+    if len(username) > max_length:
+        return False, f"玩家名字长度不能超过 {max_length} 个字符"
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        return False, "服务器玩家名字正则配置无效，请联系服主"
+    if not compiled.fullmatch(username):
+        return False, "玩家名字不符合服务器设置的命名规则"
+    return True, ""
 
 
 def list_member_agent_keys(email: str):
@@ -292,8 +344,8 @@ def lookup_ts_info(email: str, agent_key: str = ""):
         通过面板邮箱获取对应的 TShock 执行身份。
         优先级：
             1. 服务器所有者（owner_id）或成员角色为 owner，或具备 panel.console → superadmin 控制台权限
-            2. 平台 RBAC groups 表中有 superadmin 组 → 控制台权限
-            3. 平台 RBAC groups 表中有其他组 → 对应 TShock 组权限
+            2. 平台 RBAC account_roles 表中有 superadmin 组 → 控制台权限
+            3. 平台 RBAC account_roles 表中有其他组 → 对应 TShock 组权限
             4. 兜底 → default 组（无特殊权限）
     """
     try:
@@ -317,8 +369,8 @@ def lookup_ts_info(email: str, agent_key: str = ""):
 
             # ② 回退：查平台 RBAC 组（兼容旧逻辑）
             row = conn.execute("""
-                SELECT g.name FROM groups g
-                JOIN user_groups ug ON g.id = ug.group_id
+                SELECT g.name FROM account_roles g
+                JOIN account_role_members ug ON g.id = ug.group_id
                 JOIN users u ON u.id = ug.user_id
                 WHERE u.email=? COLLATE NOCASE LIMIT 1
             """, (email,)).fetchone()
@@ -334,6 +386,60 @@ def lookup_ts_info(email: str, agent_key: str = ""):
     except Exception as e:
         print(f"Lookup error: {e}")
         return {"ts_user": "Guest", "ts_group": "default", "is_console": False}
+
+
+async def sync_agent_local_store_from_platform(agent_key: str):
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            characters = conn.execute(
+                """
+                SELECT gc.user_id, u.email, gc.character_name
+                FROM agent_character_bindings_cache gc
+                JOIN users u ON u.id = gc.user_id
+                WHERE gc.agent_key=?
+                """,
+                (agent_key,),
+            ).fetchall()
+            blacklist_rows = conn.execute(
+                """
+                SELECT
+                    b.target_user_id, b.target_email, b.reason,
+                    b.created_by_user_id, COALESCE(u.email, '') AS created_by_email
+                FROM agent_server_blacklist_cache b
+                JOIN servers s ON s.id = b.server_id
+                LEFT JOIN users u ON u.id = b.created_by_user_id
+                WHERE s.agent_key=? AND b.status='active'
+                """,
+                (agent_key,),
+            ).fetchall()
+    except Exception as exc:
+        print(f"[Agent同步] 读取平台缓存失败: {exc}")
+        return
+
+    for row in characters:
+        try:
+            await manager.send_agent(agent_key, manager.make_envelope("agent_character_bind", {
+                "panel_user_id": int(row["user_id"]),
+                "panel_email": row["email"] or "",
+                "character_name": row["character_name"] or "",
+                "source": "platform_cache_sync",
+            }))
+        except Exception as exc:
+            print(f"[Agent同步] 同步角色绑定失败: {exc}")
+
+    for row in blacklist_rows:
+        try:
+            await manager.send_agent(agent_key, manager.make_envelope("agent_blacklist_add", {
+                "target_user_id": int(row["target_user_id"]),
+                "target_email": row["target_email"] or "",
+                "reason": row["reason"] or "",
+                "created_by_user_id": int(row["created_by_user_id"]),
+                "created_by_email": row["created_by_email"] or "",
+            }))
+        except Exception as exc:
+            print(f"[Agent同步] 同步本服黑名单失败: {exc}")
+
 
 @router.websocket("/ws/web")
 async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
@@ -500,7 +606,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                     continue
 
                 # 密码黑名单检查
-                username = (payload.get("username") or "").strip()
+                username = "" if payload.get("username") is None else str(payload.get("username"))
                 password = payload.get("password") or ""
                 BLACKLIST = {
                     "123456", "password", "123456789", "12345678", "12345",
@@ -510,6 +616,12 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                 if not username:
                     await websocket.send_text(manager.make_envelope("register_user_resp", {
                         "ref_id": packet.get("msg_id"), "success": False, "msg": "用户名不能为空"
+                    }))
+                    continue
+                name_ok, name_msg = validate_character_name_policy(target_key, username)
+                if not name_ok:
+                    await websocket.send_text(manager.make_envelope("register_user_resp", {
+                        "ref_id": packet.get("msg_id"), "success": False, "msg": name_msg
                     }))
                     continue
                 if len(password) < 6:
@@ -534,6 +646,8 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                         "username": username,
                         "password": password,
                         "panel_user_email": email,   # 让 Agent 回显，供干库写入使用
+                        "panel_user_id": current_user_id,
+                        "register_limit": register_limit,
                         "operator_email": email,
                     }
                 })
@@ -542,7 +656,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
             elif packet.get("type") == "send_bind_code":
                 payload    = packet.get("payload", {})
                 target_key = payload.get("agent_key")
-                bnd_username = (payload.get("username") or "").strip()
+                bnd_username = "" if payload.get("username") is None else str(payload.get("username"))
 
                 if not target_key or not bnd_username:
                     await websocket.send_text(manager.make_envelope("send_bind_code_resp", {
@@ -550,23 +664,16 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                     }))
                     continue
 
-                if not is_server_member(email, target_key):
+                name_ok, name_msg = validate_character_name_policy(target_key, bnd_username)
+                if not name_ok:
                     await websocket.send_text(manager.make_envelope("send_bind_code_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限"
+                        "ref_id": packet.get("msg_id"), "success": False, "msg": name_msg
                     }))
                     continue
 
-                # 检查是否已被绑定
-                with sqlite3.connect(AUTH_DB_PATH) as _chk:
-                    already_bound = _chk.execute(
-                        "SELECT id FROM game_characters "
-                        "WHERE agent_key=? AND character_name=? COLLATE NOCASE",
-                        (target_key, bnd_username),
-                    ).fetchone()
-                if already_bound:
+                if not is_server_member(email, target_key):
                     await websocket.send_text(manager.make_envelope("send_bind_code_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False,
-                        "msg": "该游戏账号已绑定到面板账号，无法重复绑定"
+                        "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限"
                     }))
                     continue
 
@@ -663,129 +770,11 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                 })
                 await manager.send_agent(target_key, fwd)
 
-            elif packet.get("type") == "local_server_start":
-                # 由 Python 后端直接启动 TShock（无需 Agent 在线）
-                payload    = packet.get("payload", {})
-                target_key = payload.get("agent_key")
-
-                if not target_key:
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "必须指定目标服务器"
-                    }))
-                    continue
-
-                if not has_console_access(email, target_key):
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，需要服务器 Owner 或 panel.console 权限"
-                    }))
-                    continue
-
-                # 查 DB 取 local_start_path
-                try:
-                    with sqlite3.connect(AUTH_DB_PATH) as _conn:
-                        row = _conn.execute(
-                            "SELECT local_start_path FROM servers WHERE agent_key=?",
-                            (target_key,),
-                        ).fetchone()
-                except Exception as _e:
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": f"数据库查询失败: {_e}"
-                    }))
-                    continue
-
-                script_path = (row[0] if row else "").strip()
-                if not script_path:
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "启动脚本路径未配置"
-                    }))
-                    continue
-
-                if not (script_path.endswith(".bat") or script_path.endswith(".sh")):
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "脚本路径非法，仅允许 .bat / .sh"
-                    }))
-                    continue
-
-                if not os.path.isfile(script_path):
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": f"脚本文件不存在: {script_path}"
-                    }))
-                    continue
-
-                # 检查是否已有追踪进程仍在运行
-                existing_proc = _local_processes.get(target_key)
-                if existing_proc is not None and existing_proc.poll() is None:
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "服务器进程已在后台运行"
-                    }))
-                    continue
-
-                try:
-                    cwd = os.path.dirname(os.path.abspath(script_path))
-                    if sys.platform == "win32":
-                        proc = subprocess.Popen(
-                            [script_path],
-                            cwd=cwd,
-                            creationflags=subprocess.CREATE_NEW_CONSOLE,
-                        )
-                    else:
-                        proc = subprocess.Popen(
-                            ["bash", script_path],
-                            cwd=cwd,
-                        )
-                    _local_processes[target_key] = proc
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": True,
-                        "msg": f"已启动服务器进程 (PID {proc.pid})", "pid": proc.pid
-                    }))
-                except Exception as _e:
-                    await websocket.send_text(manager.make_envelope("local_server_start_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": f"启动失败: {_e}"
-                    }))
-
-            elif packet.get("type") == "local_force_kill":
-                # 由 Python 后端直接强杀已追踪的 TShock 进程
-                payload    = packet.get("payload", {})
-                target_key = payload.get("agent_key")
-
-                if not target_key:
-                    await websocket.send_text(manager.make_envelope("local_force_kill_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "必须指定目标服务器"
-                    }))
-                    continue
-
-                if not has_console_access(email, target_key):
-                    await websocket.send_text(manager.make_envelope("local_force_kill_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，需要服务器 Owner 或 panel.console 权限"
-                    }))
-                    continue
-
-                proc = _local_processes.get(target_key)
-                if proc is None or proc.poll() is not None:
-                    _local_processes.pop(target_key, None)
-                    await websocket.send_text(manager.make_envelope("local_force_kill_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False,
-                        "msg": "无追踪进程（服务器可能未由面板启动，或已退出）"
-                    }))
-                    continue
-
-                try:
-                    proc.kill()
-                    _local_processes.pop(target_key, None)
-                    await websocket.send_text(manager.make_envelope("local_force_kill_resp", {
-                        "ref_id": packet.get("msg_id"), "success": True,
-                        "msg": f"已强制终止进程 (PID {proc.pid})"
-                    }))
-                except Exception as _e:
-                    await websocket.send_text(manager.make_envelope("local_force_kill_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": f"强杀失败: {_e}"
-                    }))
-
             elif packet.get("type") in ("file_read", "file_write", "file_delete", "db_query", "db_exec", "db_update_row", "db_delete_row", "db_insert_row",
                                           "read_tshock_config", "write_tshock_config", "reload_tshock",
                                           "read_startup_script", "write_startup_script",
                                           "read_motd", "write_motd",
-                                          "plugin_list_configs", "plugin_cloud_list",
+                                          "plugin_list_configs", "plugin_local_doc_read", "plugin_cloud_list",
                                           "plugin_check_apm", "plugin_install_apm",
                                           "plugin_local_list", "plugin_install", "plugin_uninstall",
                                           "plugin_check_updates", "plugin_update",
@@ -879,6 +868,7 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
         manager.active_agents[agent_key] = websocket
         print(f"[Agent上线] key={agent_key}")
         await websocket.send_text(manager.make_envelope("auth", {"agent_key": agent_key, "role": "agent"}))
+        await sync_agent_local_store_from_platform(agent_key)
 
         # 通知已连接的 Web 客户端：Agent 已上线
         online_notif = json.dumps({"type": "agent_status", "msg_id": new_id(), "timestamp": now_ms(),
@@ -897,6 +887,8 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                 packet = json.loads(raw)
             except Exception as e:
                 print(f"[WS] Agent消息解析失败: {e}")
+                continue
+            if manager.resolve_agent_response(packet) and str(packet.get("type", "")).startswith("agent_"):
                 continue
             if packet.get("type") == "status":
                 # 状态包含玩家信息，全体成员可见
@@ -917,24 +909,27 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                 p = packet.get("payload", {})
                 if p.get("success"):
                     pu_email  = p.get("panel_user_email", "")
+                    pu_id = p.get("panel_user_id")
                     char_name = p.get("username", "")
                     try:
                         with sqlite3.connect(AUTH_DB_PATH) as conn:
-                            uid_row = conn.execute(
-                                "SELECT id FROM users WHERE email=? COLLATE NOCASE", (pu_email,)
-                            ).fetchone()
-                            if uid_row and char_name:
+                            if not pu_id:
+                                uid_row = conn.execute(
+                                    "SELECT id FROM users WHERE email=? COLLATE NOCASE", (pu_email,)
+                                ).fetchone()
+                                pu_id = uid_row[0] if uid_row else None
+                            if pu_id and char_name:
                                 conn.execute(
                                     """
-                                    INSERT OR IGNORE INTO game_characters
+                                    INSERT OR REPLACE INTO agent_character_bindings_cache
                                         (user_id, agent_key, character_name, registered_at)
                                     VALUES (?, ?, ?, strftime('%s','now'))
                                     """,
-                                    (uid_row[0], agent_key, char_name),
+                                    (pu_id, agent_key, char_name),
                                 )
                                 conn.commit()
                     except Exception as db_err:
-                        print(f"[DB] 写入 game_characters 失败: {db_err}")
+                        print(f"[DB] 写入 agent_character_bindings_cache 失败: {db_err}")
                 await broadcast_agent_to_members(agent_key, raw)
 
             elif packet.get("type") in ("get_char_info_resp", "send_bind_code_resp",
@@ -942,15 +937,33 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                 await broadcast_agent_to_members(agent_key, raw)
 
             elif packet.get("type") == "read_startup_script_resp":
-                # 拦截启动脚本读取响应：若成功则自动将脚本路径写入 DB
+                # 拦截启动脚本读取响应：仅当路径在后端主机可用时才自动回写 local_start_path
                 p = packet.get("payload", {})
                 if p.get("success") and p.get("path"):
                     try:
                         with sqlite3.connect(AUTH_DB_PATH) as _conn:
-                            _conn.execute(
-                                "UPDATE servers SET local_start_path=? WHERE agent_key=?",
-                                (p["path"], agent_key),
-                            )
+                            probed_path = str(p.get("path") or "").strip()
+                            current_row = _conn.execute(
+                                "SELECT local_start_path FROM servers WHERE agent_key=?",
+                                (agent_key,),
+                            ).fetchone()
+                            current_path = (current_row[0] if current_row and current_row[0] else "").strip()
+
+                            if probed_path and os.path.isfile(probed_path):
+                                _conn.execute(
+                                    "UPDATE servers SET local_start_path=? WHERE agent_key=?",
+                                    (probed_path, agent_key),
+                                )
+                            else:
+                                # Agent 回报的是其主机路径，若后端不可访问则避免污染同机启动路径
+                                if not current_path or current_path == probed_path:
+                                    _conn.execute(
+                                        "UPDATE servers SET local_start_path='' WHERE agent_key=?",
+                                        (agent_key,),
+                                    )
+                                    print(f"[DB] 已清理不可用 local_start_path: {probed_path}")
+                                else:
+                                    print(f"[DB] 忽略不可用 local_start_path: {probed_path}")
                             _conn.commit()
                     except Exception as _db_err:
                         print(f"[DB] 更新 local_start_path 失败: {_db_err}")
@@ -968,7 +981,7 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                                        "write_startup_script_resp",
                                        "read_motd_resp", "write_motd_resp",
                                        "reload_tshock_resp",
-                                       "plugin_list_configs_resp", "plugin_cloud_list_resp",
+                                       "plugin_list_configs_resp", "plugin_local_doc_read_resp", "plugin_cloud_list_resp",
                                        "plugin_check_apm_resp", "plugin_install_apm_resp",
                                        "plugin_local_list_resp", "plugin_install_resp", "plugin_uninstall_resp",
                                        "plugin_check_updates_resp", "plugin_update_resp",

@@ -26,6 +26,7 @@ async function request(method, path, body) {
 export function claimServer(agent_key, name, description = '', is_public = false, extra = {}) {
   return request('POST', '/api/servers/claim', {
     agent_key, name, description, is_public,
+    join_requires_approval: extra.join_requires_approval ?? false,
     game_ip:   extra.game_ip   ?? '',
     game_port: extra.game_port ?? null,
     qq_group:  extra.qq_group  ?? '',
@@ -33,9 +34,54 @@ export function claimServer(agent_key, name, description = '', is_public = false
   })
 }
 
-/** 加入服务器 */
-export function joinServer(server_id) {
-  return request('POST', '/api/servers/join', { server_id })
+/** 按服务器编号申请加入 */
+export function applyJoinServerByCode(server_code) {
+  return request('POST', '/api/servers/apply', { server_code })
+}
+
+/** 在已知服务器上下文中提交申请 */
+export function applyJoinServer(server_id, message = '') {
+  return request('POST', `/api/servers/${server_id}/apply`, { message })
+}
+
+/** 撤回入服申请 */
+export function withdrawJoinRequest(server_id, request_id) {
+  return request('POST', `/api/servers/${server_id}/join-requests/${request_id}/withdraw`)
+}
+
+/** 服主查看入服申请 */
+export function listJoinRequests(server_id, status) {
+  const q = new URLSearchParams()
+  if (status) q.set('status', status)
+  const suffix = q.toString() ? `?${q.toString()}` : ''
+  return request('GET', `/api/servers/${server_id}/join-requests${suffix}`)
+}
+
+/** 服主批准入服申请 */
+export function approveJoinRequest(server_id, request_id, note = '') {
+  return request('POST', `/api/servers/${server_id}/join-requests/${request_id}/approve`, { note })
+}
+
+/** 服主拒绝入服申请 */
+export function rejectJoinRequest(server_id, request_id, note = '') {
+  return request('POST', `/api/servers/${server_id}/join-requests/${request_id}/reject`, { note })
+}
+
+/** 服主发邀请 */
+export function createServerInvite(server_id, invitee_email, message = '', expires_in_hours = 72) {
+  return request('POST', `/api/servers/${server_id}/invites`, {
+    invitee_email,
+    message,
+    expires_in_hours,
+  })
+}
+
+/** 服主查看邀请记录 */
+export function listServerInvites(server_id, status) {
+  const q = new URLSearchParams()
+  if (status) q.set('status', status)
+  const suffix = q.toString() ? `?${q.toString()}` : ''
+  return request('GET', `/api/servers/${server_id}/invites${suffix}`)
 }
 
 /** 获取当前用户参与的所有服务器 */
@@ -137,6 +183,67 @@ export function getPanelFeatures(server_id) {
 }
 
 /** 更新面板功能配置 */
-export function updatePanelFeatures(server_id, { register_limit }) {
-  return request('PUT', `/api/servers/${server_id}/panel-features`, { register_limit })
+export function updatePanelFeatures(server_id, {
+  register_limit,
+  blacklist_auto_reject_count = 0,
+  character_name_regex,
+  character_name_max_length,
+}) {
+  return request('PUT', `/api/servers/${server_id}/panel-features`, {
+    register_limit,
+    blacklist_auto_reject_count,
+    character_name_regex,
+    character_name_max_length,
+  })
+}
+
+/** 更新入服审核开关（面板功能） */
+export function updateJoinApproval(server_id, join_requires_approval) {
+  return request('PUT', `/api/servers/${server_id}/panel-features/join-approval`, { join_requires_approval })
+}
+
+/** 面板功能：列出入服申请 */
+export function listPanelJoinRequests(server_id, status) {
+  const q = new URLSearchParams()
+  if (status) q.set('status', status)
+  const suffix = q.toString() ? `?${q.toString()}` : ''
+  return request('GET', `/api/servers/${server_id}/panel-features/join-requests${suffix}`)
+}
+
+/** 面板功能：批准入服申请 */
+export function approvePanelJoinRequest(server_id, request_id, note = '') {
+  return request('POST', `/api/servers/${server_id}/panel-features/join-requests/${request_id}/approve`, { note })
+}
+
+/** 面板功能：拒绝入服申请 */
+export function rejectPanelJoinRequest(server_id, request_id, note = '') {
+  return request('POST', `/api/servers/${server_id}/panel-features/join-requests/${request_id}/reject`, { note })
+}
+
+/** 面板功能：发送邀请 */
+export function createPanelInvite(server_id, invitee_email, message = '', expires_in_hours = 72) {
+  return request('POST', `/api/servers/${server_id}/panel-features/invites`, {
+    invitee_email,
+    message,
+    expires_in_hours,
+  })
+}
+
+export function listServerBlacklist(server_id, query = {}) {
+  const q = new URLSearchParams()
+  if (query.q) q.set('q', query.q)
+  const suffix = q.toString() ? `?${q.toString()}` : ''
+  return request('GET', `/api/servers/${server_id}/blacklist${suffix}`)
+}
+
+export function addServerBlacklist(server_id, target_user_id, reason = '') {
+  return request('POST', `/api/servers/${server_id}/blacklist`, { target_user_id, reason })
+}
+
+export function removeServerBlacklist(server_id, entry_id) {
+  return request('DELETE', `/api/servers/${server_id}/blacklist/${entry_id}`)
+}
+
+export function submitCloudBlacklist(server_id, target_user_id, reason) {
+  return request('POST', `/api/servers/${server_id}/cloud-blacklist-submissions`, { target_user_id, reason })
 }

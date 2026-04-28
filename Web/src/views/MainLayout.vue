@@ -47,6 +47,85 @@
             <span class="nav-label">服务器列表</span>
           </router-link>
 
+          <router-link class="nav-item" to="/messages" active-class="active">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span class="nav-label">消息中心</span>
+          </router-link>
+
+          <div v-if="isPlatformAdmin" class="nav-group">
+            <div class="nav-group-header" @click="platformGroupOpen = !platformGroupOpen">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z"/>
+                <path d="M9.5 12l1.5 1.5 3.5-3.5"/>
+              </svg>
+              <span class="nav-label nav-label-group">
+                平台管理
+                <svg class="group-arrow" :class="{ open: platformGroupOpen }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+              </span>
+            </div>
+            <div v-show="platformGroupOpen && sidebarOpen" class="nav-group-body">
+              <router-link class="nav-item nav-item-sub" to="/platform-admin" active-class="active" exact>
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="7" rx="1"/>
+                  <rect x="14" y="3" width="7" height="7" rx="1"/>
+                  <rect x="3" y="14" width="7" height="7" rx="1"/>
+                  <rect x="14" y="14" width="7" height="7" rx="1"/>
+                </svg>
+                <span class="nav-label">平台总览</span>
+              </router-link>
+              <router-link class="nav-item nav-item-sub" to="/platform-admin/servers" active-class="active">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="4" width="20" height="5" rx="1"/>
+                  <rect x="2" y="10" width="20" height="5" rx="1"/>
+                  <rect x="2" y="16" width="20" height="5" rx="1"/>
+                </svg>
+                <span class="nav-label">服务器管理</span>
+              </router-link>
+              <router-link class="nav-item nav-item-sub" to="/platform-admin/accounts" active-class="active">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="8" r="4"/>
+                  <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                  <line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/>
+                </svg>
+                <span class="nav-label">账号管理</span>
+              </router-link>
+              <router-link class="nav-item nav-item-sub" to="/platform-admin/cloud-blacklist" active-class="active">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>
+                  <path d="m9 12 2 2 4-4"/>
+                </svg>
+                <span class="nav-label">云黑审核</span>
+              </router-link>
+              <router-link class="nav-item nav-item-sub" to="/platform-admin/settings" active-class="active">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <span class="nav-label">平台设置</span>
+              </router-link>
+              <router-link class="nav-item nav-item-sub" to="/platform-admin/rbac" active-class="active">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+                <span class="nav-label">平台权限组</span>
+              </router-link>
+              <router-link class="nav-item nav-item-sub" to="/platform-admin/announcements" active-class="active">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                </svg>
+                <span class="nav-label">公告管理</span>
+              </router-link>
+            </div>
+          </div>
+
           <!-- 有服务器才显示以下内容 -->
           <template v-if="hasServers">
             <!-- 当前服务器选择器 -->
@@ -231,6 +310,7 @@ import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getToken, getEmail, clearAuth } from '@/api/auth'
 import { listServers } from '@/api/servers'
+import { getPlatformMe } from '@/api/platform'
 
 const router = useRouter()
 const route = useRoute()
@@ -239,7 +319,10 @@ const token  = getToken() || ''
 
 const sidebarOpen     = ref(true)
 const tshockGroupOpen = ref(false)
+const platformGroupOpen = ref(false)
 const wsState         = ref('disconnected')
+const isPlatformAdmin = ref(false)
+const platformAdminChecked = ref(false)
 // 按 agent_key 追踪在线状态，待 activeServerKey 包含该 key 时 agentOnline 才为 true
 const onlineAgentKeys = ref(new Set())
 const hasWsOnlineSnapshot = ref(false)
@@ -322,6 +405,17 @@ async function loadServers() {
   } catch(e) { /* 忽略，不影响其他功能 */ }
 }
 
+async function detectPlatformAdmin() {
+  try {
+    await getPlatformMe()
+    isPlatformAdmin.value = true
+  } catch {
+    isPlatformAdmin.value = false
+  } finally {
+    platformAdminChecked.value = true
+  }
+}
+
 function onServerChange() {
   localStorage.setItem('active_agent_key', activeServerKey.value)
 }
@@ -334,6 +428,7 @@ provide('reloadServers', loadServers)
 provide('canManageActiveServer', canManageActiveServer)
 provide('isServerOwner', isServerOwner)
 provide('hasPerm', hasPerm)
+provide('isPlatformAdmin', isPlatformAdmin)
 
 // ── WebSocket 连接（全局共享，由 Layout 维护）──
 let ws         = null
@@ -497,8 +592,15 @@ onUnmounted(() => {
 // 通过全局事件让子页面调用 layout 的 sendWs
 window.__tshockSend = sendWs
 
-onMounted(() => { initWs(); loadServers() })
-onUnmounted(() => { clearTimeout(retryTimer); ws?.close() })
+onMounted(() => {
+  initWs()
+  loadServers()
+  detectPlatformAdmin()
+})
+onUnmounted(() => {
+  clearTimeout(retryTimer)
+  ws?.close()
+})
 
 // 路由权限映射：访问该路由所需的面板权限
 const ROUTE_PERM_MAP = {
@@ -506,6 +608,7 @@ const ROUTE_PERM_MAP = {
   '/files':           'panel.files',
   '/users':           'panel.users',
   '/panel-features':  'panel.features',
+  '/platform-admin':  'platform.admin',
   '/tshock/startup':  'tshock.startup',
   '/tshock/motd':     'tshock.motd',
   '/tshock/config':   'tshock.config',
@@ -517,8 +620,14 @@ const ROUTE_PERM_MAP = {
 }
 
 watch(
-  [() => route.path, activeServer],
-  ([path, server]) => {
+  [() => route.path, activeServer, isPlatformAdmin, platformAdminChecked],
+  ([path, server, platformAdmin, checked]) => {
+    if (path.startsWith('/platform-admin')) {
+      platformGroupOpen.value = true
+      if (!checked) return
+      if (!platformAdmin) router.replace('/home')
+      return
+    }
     if (!server) return  // 尚未选择服务器，不跳转
     // 服主专属页面
     if (path === '/panel-groups') {
@@ -593,6 +702,7 @@ watch(
 .body-area {
   display: flex;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -619,6 +729,7 @@ watch(
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 .nav-section-title {
@@ -650,6 +761,8 @@ watch(
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
   padding: 9px 10px;
   border-radius: 8px;
   color: #64748b;
@@ -694,6 +807,9 @@ watch(
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  flex: 0 0 auto;
   padding: 9px 10px;
   border-radius: 8px;
   color: #64748b;
@@ -714,7 +830,13 @@ watch(
   stroke: currentColor;
 }
 .nav-label {
-  display: flex; align-items: center; gap: 6px; overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .badge-soon {
@@ -768,9 +890,18 @@ watch(
 /* ── 内容区 ── */
 .main-content {
   flex: 1;
-  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
+  scrollbar-gutter: stable;
+}
+
+.main-content :deep(> *) {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* ── 页面切换动画 ── */

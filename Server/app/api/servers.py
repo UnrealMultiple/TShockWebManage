@@ -1,15 +1,21 @@
 import asyncio
 import json
+import os
+import re
+import secrets
 import sqlite3
 import time
+import unicodedata
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import AUTH_DB_PATH
 from app.core.database import get_db
+from app.core.qq_email import normalize_qq_email
 from app.core.utils import verify_token, new_id, now_ms
 from app.models.db_models import Server, ServerMember, ServerMemberRole
 from app.models.schemas import (
@@ -19,10 +25,49 @@ from app.models.schemas import (
     AssignCharacterOwnerReq,
     PanelGroupCreate, PanelGroupUpdate, PanelGroupOut, PanelMemberGroupUpdate,
     PanelFeatureSettingsOut, PanelFeatureSettingsUpdate,
+    PanelMembershipInviteReq, PanelMembershipReviewReq,
+    ServerApplyReq, JoinRequestReviewReq, JoinRequestOut,
+    ServerInviteCreateReq, ServerInviteOut, BlacklistCreateReq,
+)
+from app.services.membership_service import add_member
+from app.services.notification_service import create_notification
+from app.services.agent_store_service import (
+    add_blacklist_on_agent,
+    assign_character_on_agent,
+    bind_character_on_agent,
+    delete_character_on_agent,
+    remove_blacklist_on_agent,
 )
 from app.services.ws_manager import manager
 
 router = APIRouter(prefix="/api/servers", tags=["Servers"])
+
+DEFAULT_CHARACTER_NAME_REGEX = r"^[\u4e00-\u9fffA-Za-z0-9:/\[\]]+$"
+DEFAULT_CHARACTER_NAME_MAX_LENGTH = 20
+BLOCKED_CHARACTER_NAME_CATEGORIES = {"Cc", "Cf", "Zs", "Zl", "Zp"}
+
+
+def _expose_local_start_path(path: str) -> str:
+    """Only expose runnable local startup scripts on this backend host."""
+    p = (path or "").strip()
+    if not p:
+        return ""
+    if not (p.endswith(".bat") or p.endswith(".sh")):
+        return ""
+    return p if os.path.isfile(p) else ""
+
+
+def _normalize_server_code(v: str) -> str:
+    return ''.join(ch for ch in str(v or '').upper() if ch.isalnum())
+
+
+def _generate_server_code(db: Session) -> str:
+    # 12 位十六进制：不可预测，便于输入
+    while True:
+        code = secrets.token_hex(6).upper()
+        exists = db.query(Server).filter_by(server_code=code).first()
+        if not exists:
+            return code
 
 
 # ── 面板权限组默认配置 ──────────────────────────────────────────────────────
@@ -42,7 +87,9 @@ _DEFAULT_PANEL_GROUPS = [
             "tshock.*",
             "panel.console", "panel.users", "panel.files",
             "panel.database", "panel.dashboard", "panel.characters",
+            "panel.membership.review", "panel.invites.manage",
             "panel.inventory.view.self", "panel.inventory.view.others",
+            "panel.announcements", "panel.blacklist",
         ],
     },
     {
@@ -52,6 +99,7 @@ _DEFAULT_PANEL_GROUPS = [
         "permissions": [
             "panel.dashboard", "panel.characters",
             "panel.inventory.view.self", "panel.inventory.view.others",
+            "panel.announcements",
         ],
     },
 ]
@@ -60,47 +108,47 @@ _DEFAULT_PANEL_GROUPS = [
 _LEGACY_GROUP_RENAME = {"owner": "服主", "admin": "管理", "default": "成员"}
 
 
-def _init_server_panel_groups(server_id: int):
+def _init_server_roles(server_id: int):
     """为设备组（或旧服务器迁移）初始化/修复默认面板权限组（幂等）"""
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         # ① 将旧英文组名重命名为中文（保留成员分配关系）
         for old_name, new_name in _LEGACY_GROUP_RENAME.items():
             old_row = conn.execute(
-                "SELECT id FROM server_panel_groups WHERE server_id=? AND name=?",
+                "SELECT id FROM server_roles WHERE server_id=? AND name=?",
                 (server_id, old_name),
             ).fetchone()
             new_row = conn.execute(
-                "SELECT id FROM server_panel_groups WHERE server_id=? AND name=?",
+                "SELECT id FROM server_roles WHERE server_id=? AND name=?",
                 (server_id, new_name),
             ).fetchone()
             if old_row and not new_row:
                 # 直接重命名旧组
                 conn.execute(
-                    "UPDATE server_panel_groups SET name=? WHERE id=?",
+                    "UPDATE server_roles SET name=? WHERE id=?",
                     (new_name, old_row[0]),
                 )
             elif old_row and new_row:
                 # 两者共存：将旧组成员迁移到新组，再删除旧组
                 conn.execute(
-                    "UPDATE OR IGNORE server_member_panel_groups SET group_id=? WHERE group_id=?",
+                    "UPDATE OR IGNORE server_member_roles SET group_id=? WHERE group_id=?",
                     (new_row[0], old_row[0]),
                 )
-                conn.execute("DELETE FROM server_panel_groups WHERE id=?", (old_row[0],))
+                conn.execute("DELETE FROM server_roles WHERE id=?", (old_row[0],))
         # ② 补充缺少的默认中文组
         for g in _DEFAULT_PANEL_GROUPS:
             conn.execute(
-                "INSERT OR IGNORE INTO server_panel_groups(server_id, name, description, is_builtin) "
+                "INSERT OR IGNORE INTO server_roles(server_id, name, description, is_builtin) "
                 "VALUES(?,?,?,?)",
                 (server_id, g["name"], g["description"], g["is_builtin"]),
             )
             row = conn.execute(
-                "SELECT id FROM server_panel_groups WHERE server_id=? AND name=?",
+                "SELECT id FROM server_roles WHERE server_id=? AND name=?",
                 (server_id, g["name"]),
             ).fetchone()
             gid = row[0]
             for perm in g["permissions"]:
                 conn.execute(
-                    "INSERT OR IGNORE INTO server_panel_group_perms(group_id, permission) VALUES(?,?)",
+                    "INSERT OR IGNORE INTO server_role_permissions(group_id, permission) VALUES(?,?)",
                     (gid, perm),
                 )
         conn.commit()
@@ -118,8 +166,15 @@ def _get_user_id(authorization: str = Header(...)) -> int:
         row = conn.execute(
             "SELECT id FROM users WHERE email=? COLLATE NOCASE", (email,)
         ).fetchone()
+        if row:
+            banned = conn.execute(
+                "SELECT 1 FROM account_restrictions WHERE user_id=? AND restriction_type='ban' AND is_active=1 LIMIT 1",
+                (int(row[0]),),
+            ).fetchone()
     if not row:
         raise HTTPException(401, "用户不存在")
+    if banned:
+        raise HTTPException(403, "账号已被平台封禁")
     return row[0]
 
 
@@ -129,18 +184,41 @@ def _get_user_email(user_id: int) -> str:
     return row[0] if row else ""
 
 
+def _get_user_id_by_email(email: str) -> Optional[int]:
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE email=? COLLATE NOCASE",
+            ((email or "").strip(),),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _get_platform_setting(key: str, default: str = "") -> str:
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT value FROM platform_settings WHERE key=?",
+            (key,),
+        ).fetchone()
+    return str(row[0]) if row and row[0] is not None else default
+
+
+def _get_platform_bool_setting(key: str, default: bool = False) -> bool:
+    raw = _get_platform_setting(key, "true" if default else "false")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _has_panel_perm(server_id: int, user_id: int, permission: str) -> bool:
     """检查用户在指定服务器是否拥有给定面板权限（支持 * 及前缀通配 tshock.*）"""
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         pg_row = conn.execute(
-            "SELECT spg.id FROM server_member_panel_groups smpg "
-            "JOIN server_panel_groups spg ON spg.id = smpg.group_id "
+            "SELECT spg.id FROM server_member_roles smpg "
+            "JOIN server_roles spg ON spg.id = smpg.group_id "
             "WHERE smpg.server_id=? AND smpg.user_id=?",
             (server_id, user_id),
         ).fetchone()
         if not pg_row:
             return False
-        for p in _collect_panel_group_permissions(conn, server_id, pg_row[0]):
+        for p in _collect_panel_role_permissions(conn, server_id, pg_row[0]):
             if p == '*' or p == permission:
                 return True
             if p.endswith('.*'):
@@ -150,7 +228,7 @@ def _has_panel_perm(server_id: int, user_id: int, permission: str) -> bool:
         return False
 
 
-def _collect_panel_group_permissions(conn: sqlite3.Connection, server_id: int, group_id: int) -> List[str]:
+def _collect_panel_role_permissions(conn: sqlite3.Connection, server_id: int, group_id: int) -> List[str]:
     """递归收集权限组权限（包含继承父组），并避免循环依赖。"""
     seen = set()
     perms = set()
@@ -159,13 +237,13 @@ def _collect_panel_group_permissions(conn: sqlite3.Connection, server_id: int, g
     while current_id and current_id not in seen:
         seen.add(current_id)
         rows = conn.execute(
-            "SELECT permission FROM server_panel_group_perms WHERE group_id=?",
+            "SELECT permission FROM server_role_permissions WHERE group_id=?",
             (current_id,),
         ).fetchall()
         for (perm,) in rows:
             perms.add(perm)
         parent_row = conn.execute(
-            "SELECT parent_group_id FROM server_panel_groups WHERE id=? AND server_id=?",
+            "SELECT parent_group_id FROM server_roles WHERE id=? AND server_id=?",
             (current_id, server_id),
         ).fetchone()
         current_id = parent_row[0] if parent_row else None
@@ -182,7 +260,7 @@ def _has_parent_cycle(conn: sqlite3.Connection, server_id: int, group_id: int, p
             return True
         seen.add(current_id)
         row = conn.execute(
-            "SELECT parent_group_id FROM server_panel_groups WHERE id=? AND server_id=?",
+            "SELECT parent_group_id FROM server_roles WHERE id=? AND server_id=?",
             (current_id, server_id),
         ).fetchone()
         if not row:
@@ -202,6 +280,47 @@ def _caller_can_manage(server_id: int, user_id: int, db: Session, perm: str = "p
     return _has_panel_perm(server_id, user_id, perm)
 
 
+def _caller_can_manage_any(server_id: int, user_id: int, db: Session, perms: List[str]) -> bool:
+    for perm in perms:
+        if _caller_can_manage(server_id, user_id, db, perm):
+            return True
+    return False
+
+
+def _require_server_owner(server_id: int, user_id: int, db: Session) -> Server:
+    server = db.query(Server).filter_by(id=server_id).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+    if server.owner_id != user_id:
+        raise HTTPException(403, "仅服主可执行此操作")
+    return server
+
+
+def _require_server_manage_perms(
+    server_id: int,
+    user_id: int,
+    db: Session,
+    perms: List[str],
+    denied_message: str,
+) -> Server:
+    server = db.query(Server).filter_by(id=server_id).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+    if not _caller_can_manage_any(server_id, user_id, db, perms):
+        raise HTTPException(403, denied_message)
+    return server
+
+
+def _require_panel_features_manage(server_id: int, user_id: int, db: Session) -> Server:
+    return _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.features", "panel.membership.review", "panel.invites.manage", "panel.users"],
+        "无权限，需要服务器 Owner 或相关面板权限",
+    )
+
+
 def _normalize_register_limit(limit_value: Optional[int]) -> int:
     try:
         limit = int(limit_value if limit_value is not None else 1)
@@ -210,15 +329,68 @@ def _normalize_register_limit(limit_value: Optional[int]) -> int:
     return max(0, min(50, limit))
 
 
+def _normalize_blacklist_auto_reject_count(value: Optional[int]) -> int:
+    try:
+        count = int(value if value is not None else 0)
+    except Exception:
+        count = 0
+    return max(0, min(99, count))
+
+
+def _normalize_character_name_max_length(value: Optional[int]) -> int:
+    try:
+        length = int(value if value is not None else DEFAULT_CHARACTER_NAME_MAX_LENGTH)
+    except Exception:
+        length = DEFAULT_CHARACTER_NAME_MAX_LENGTH
+    return max(1, min(50, length))
+
+
+def _normalize_character_name_regex(value: Optional[str]) -> str:
+    pattern = str(value or DEFAULT_CHARACTER_NAME_REGEX).strip()
+    if not pattern:
+        pattern = DEFAULT_CHARACTER_NAME_REGEX
+    if len(pattern) > 256:
+        raise HTTPException(400, "玩家名字正则长度不能超过 256")
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        raise HTTPException(400, f"玩家名字正则无效: {e}")
+    return pattern
+
+
+def _find_blocked_character_name_char(value: str) -> Optional[str]:
+    for ch in value or "":
+        if unicodedata.category(ch) in BLOCKED_CHARACTER_NAME_CATEGORIES:
+            return ch
+    return None
+
+
+def _validate_character_name_policy(server: Server, character_name: str):
+    name = "" if character_name is None else str(character_name)
+    max_len = _normalize_character_name_max_length(getattr(server, "character_name_max_length", DEFAULT_CHARACTER_NAME_MAX_LENGTH))
+    pattern = _normalize_character_name_regex(getattr(server, "character_name_regex", DEFAULT_CHARACTER_NAME_REGEX))
+    if not name:
+        raise HTTPException(400, "玩家名字不能为空")
+    if name != name.strip():
+        raise HTTPException(400, "玩家名字不能包含前后空白字符")
+    blocked = _find_blocked_character_name_char(name)
+    if blocked is not None:
+        raise HTTPException(400, "玩家名字不能包含空白、零宽字符、控制字符或不可见格式字符")
+    if len(name) > max_len:
+        raise HTTPException(400, f"玩家名字长度不能超过 {max_len} 个字符")
+    if not re.fullmatch(pattern, name):
+        raise HTTPException(400, "玩家名字不符合服务器设置的命名规则")
+
+
 def _count_registered_characters(conn: sqlite3.Connection, agent_key: str, user_id: Optional[int] = None) -> int:
     if user_id is None:
         row = conn.execute(
-            "SELECT COUNT(*) FROM game_characters WHERE agent_key=?",
+            "SELECT COUNT(*) FROM agent_character_bindings_cache WHERE agent_key=?",
             (agent_key,),
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT COUNT(*) FROM game_characters WHERE agent_key=? AND user_id=?",
+            "SELECT COUNT(*) FROM agent_character_bindings_cache WHERE agent_key=? AND user_id=?",
             (agent_key, user_id),
         ).fetchone()
     return int(row[0] if row and row[0] is not None else 0)
@@ -231,6 +403,181 @@ def _assert_user_register_quota_available(conn: sqlite3.Connection, server: Serv
         raise HTTPException(400, f"当前账号可注册角色已达上限（{limit}）")
 
 
+def _blacklist_summary_for_user(conn: sqlite3.Connection, server_id: int, user_id: int) -> dict:
+    conn.row_factory = sqlite3.Row
+    local_rows = conn.execute(
+        """
+        SELECT
+            b.id, b.reason, b.created_at,
+            cb.email AS created_by_email
+        FROM agent_server_blacklist_cache b
+        LEFT JOIN users cb ON cb.id = b.created_by_user_id
+        WHERE b.server_id=? AND b.target_user_id=? AND b.status='active'
+        ORDER BY b.created_at DESC, b.id DESC
+        """,
+        (server_id, user_id),
+    ).fetchall()
+    cloud_rows = conn.execute(
+        """
+        SELECT
+            c.id, c.reason, c.submitted_at, c.reviewed_at, c.review_note,
+            s.name AS source_server_name,
+            sb.email AS submitted_by_email,
+            rb.email AS reviewed_by_email
+        FROM cloud_blacklist_entries c
+        LEFT JOIN servers s ON s.id = c.source_server_id
+        LEFT JOIN users sb ON sb.id = c.submitted_by_user_id
+        LEFT JOIN users rb ON rb.id = c.reviewed_by_user_id
+        WHERE c.target_user_id=? AND c.status='approved'
+        ORDER BY c.reviewed_at DESC, c.submitted_at DESC, c.id DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    local_count = len(local_rows)
+    cloud_count = len(cloud_rows)
+    details = []
+    for row in local_rows:
+        details.append({
+            "id": int(row["id"]),
+            "scope": "server",
+            "label": "本服务器黑名单",
+            "reason": row["reason"] or "",
+            "source_server_name": "",
+            "operator_email": row["created_by_email"] or "",
+            "review_note": "",
+            "created_at": int(row["created_at"] or 0),
+        })
+    for row in cloud_rows:
+        details.append({
+            "id": int(row["id"]),
+            "scope": "cloud",
+            "label": "平台云黑",
+            "reason": row["reason"] or "",
+            "source_server_name": row["source_server_name"] or "",
+            "operator_email": row["submitted_by_email"] or "",
+            "reviewed_by_email": row["reviewed_by_email"] or "",
+            "review_note": row["review_note"] or "",
+            "created_at": int(row["submitted_at"] or 0),
+            "reviewed_at": int(row["reviewed_at"] or 0),
+        })
+    flags = []
+    if local_count:
+        flags.append("本服务器黑名单")
+    if cloud_count:
+        flags.append(f"平台云黑 {cloud_count} 条")
+    return {
+        "server_blacklist_count": local_count,
+        "cloud_blacklist_count": cloud_count,
+        "blacklist_flags": flags,
+        "blacklist_details": details,
+    }
+
+
+def _join_request_rows_with_blacklist(rows: List[sqlite3.Row], server_id: int) -> List[JoinRequestOut]:
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        result = []
+        for r in rows:
+            item = dict(r)
+            item.update(_blacklist_summary_for_user(conn, server_id, int(item["applicant_user_id"])))
+            result.append(JoinRequestOut(**item))
+    return result
+
+
+def _join_review_receiver_ids(db: Session, server_id: int, applicant_user_id: int) -> List[int]:
+    ids = set()
+    server = db.query(Server).filter_by(id=server_id).first()
+    if server and server.owner_id and int(server.owner_id) != applicant_user_id:
+        ids.add(int(server.owner_id))
+    members = db.query(ServerMember).filter_by(server_id=server_id).all()
+    for member in members:
+        mid = int(member.user_id)
+        if mid == applicant_user_id:
+            continue
+        if _caller_can_manage_any(server_id, mid, db, ["panel.membership.review", "panel.users"]):
+            ids.add(mid)
+    return sorted(ids)
+
+
+def _blacklist_summary_text(summary: dict) -> str:
+    flags = summary.get("blacklist_flags") or []
+    return "；".join(flags) if flags else "无黑名单记录"
+
+
+def _blacklist_primary_reason(summary: dict, preferred_scope: str = "") -> str:
+    details = summary.get("blacklist_details") or []
+    for item in details:
+        if preferred_scope and item.get("scope") != preferred_scope:
+            continue
+        reason = (item.get("reason") or "").strip()
+        if reason:
+            return reason
+    for item in details:
+        reason = (item.get("reason") or "").strip()
+        if reason:
+            return reason
+    return ""
+
+
+async def _delete_user_server_local_state(db: Session, server_id: int, user_id: int, agent_key: str) -> None:
+    if agent_key in manager.active_agents:
+        rows = db.execute(
+            text("SELECT character_name FROM agent_character_bindings_cache WHERE agent_key = :agent_key AND user_id = :uid"),
+            {"agent_key": agent_key, "uid": user_id},
+        ).fetchall()
+        for row in rows:
+            character_name = row[0]
+            if not character_name:
+                continue
+            try:
+                await delete_character_on_agent(agent_key, character_name, user_id)
+            except HTTPException:
+                pass
+
+    db.execute(
+        text("DELETE FROM agent_character_bindings_cache WHERE agent_key = :agent_key AND user_id = :uid"),
+        {"agent_key": agent_key, "uid": user_id},
+    )
+    db.execute(
+        text("DELETE FROM server_member_roles WHERE server_id = :sid AND user_id = :uid"),
+        {"sid": server_id, "uid": user_id},
+    )
+
+
+def _notify_join_reviewers(
+    db: Session,
+    server: Server,
+    request_id: int,
+    applicant_user_id: int,
+    status: str,
+    blacklist_summary: dict,
+    review_note: str = "",
+):
+    applicant_email = _get_user_email(applicant_user_id)
+    status_label = {"pending": "待审批", "approved": "已自动通过", "rejected": "已自动拒绝"}.get(status, status)
+    blacklist_text = _blacklist_summary_text(blacklist_summary)
+    note_text = f"，原因：{review_note}" if review_note else ""
+    content = f"{applicant_email} 申请加入服务器 {server.name}，状态：{status_label}{note_text}。黑名单记录：{blacklist_text}"
+    for receiver_id in _join_review_receiver_ids(db, int(server.id), applicant_user_id):
+        create_notification(
+            receiver_user_id=receiver_id,
+            sender_user_id=applicant_user_id,
+            server_id=int(server.id),
+            msg_type="join_request_pending" if status == "pending" else "join_request_result",
+            ref_type="join_request",
+            ref_id=request_id,
+            title="新的入服申请",
+            content=content,
+            payload={
+                "server_id": int(server.id),
+                "request_id": request_id,
+                "status": status,
+                "blacklist": blacklist_summary,
+                "review_note": review_note,
+            },
+        )
+
+
 def _server_to_out(s: Server, db: Session, user_id: Optional[int] = None) -> ServerOut:
     server_role = None
     panel_group_name = None
@@ -241,23 +588,25 @@ def _server_to_out(s: Server, db: Session, user_id: Optional[int] = None) -> Ser
             server_role = membership.role.value
         with sqlite3.connect(AUTH_DB_PATH) as _conn:
             pg_row = _conn.execute(
-                "SELECT spg.id, spg.name FROM server_member_panel_groups smpg "
-                "JOIN server_panel_groups spg ON spg.id = smpg.group_id "
+                "SELECT spg.id, spg.name FROM server_member_roles smpg "
+                "JOIN server_roles spg ON spg.id = smpg.group_id "
                 "WHERE smpg.server_id=? AND smpg.user_id=?",
                 (s.id, user_id),
             ).fetchone()
             if pg_row:
                 panel_group_name = pg_row[1]
-                panel_permissions = _collect_panel_group_permissions(_conn, s.id, pg_row[0])
+                panel_permissions = _collect_panel_role_permissions(_conn, s.id, pg_row[0])
 
     return ServerOut(
         id=s.id,
+        server_code=(s.server_code or ""),
         name=s.name,
         description=s.description or "",
         agent_key=s.agent_key,
         owner_id=s.owner_id,
         created_at=s.created_at,
         is_public=bool(s.is_public),
+        join_requires_approval=bool(getattr(s, "join_requires_approval", False)),
         online=s.agent_key in manager.active_agents,
         member_count=db.query(ServerMember).filter_by(server_id=s.id).count(),
         server_role=server_role,
@@ -269,8 +618,15 @@ def _server_to_out(s: Server, db: Session, user_id: Optional[int] = None) -> Ser
         game_version=s.game_version or "",
         show_ip=bool(s.show_ip) if s.show_ip is not None else True,
         register_limit=_normalize_register_limit(getattr(s, "register_limit", 1)),
+        blacklist_auto_reject_count=_normalize_blacklist_auto_reject_count(getattr(s, "blacklist_auto_reject_count", 0)),
+        character_name_regex=_normalize_character_name_regex(getattr(s, "character_name_regex", DEFAULT_CHARACTER_NAME_REGEX)),
+        character_name_max_length=_normalize_character_name_max_length(getattr(s, "character_name_max_length", DEFAULT_CHARACTER_NAME_MAX_LENGTH)),
+        platform_status=getattr(s, "platform_status", "active") or "active",
+        platform_audit_status=getattr(s, "platform_audit_status", "pending") or "pending",
+        platform_audit_reason=getattr(s, "platform_audit_reason", None),
+        platform_is_public=bool(getattr(s, "platform_is_public", False)),
         local_start_enabled=bool(s.local_start_enabled) if s.local_start_enabled is not None else False,
-        local_start_path=s.local_start_path or "",
+        local_start_path=_expose_local_start_path(s.local_start_path or ""),
     )
 
 
@@ -287,19 +643,47 @@ def claim_server(
         if not agent_key:
             raise HTTPException(400, "agent_key 不能为空")
 
+        max_servers_raw = _get_platform_setting("platform.max_servers_per_user", "3")
+        try:
+            max_servers = int(max_servers_raw or 0)
+        except Exception:
+            max_servers = 0
+        if max_servers > 0:
+            owned_count = db.query(Server).filter(
+                Server.owner_id == user_id,
+                Server.platform_status != "deleted",
+            ).count()
+            if owned_count >= max_servers:
+                raise HTTPException(403, f"你最多只能创建 {max_servers} 个服务器")
+
         # 认领前必须验证 Agent 当前在线，避免无效 key 被误认领
         if agent_key not in manager.active_agents:
             raise HTTPException(400, "该 Agent 当前未连接，无法认领，请先启动并连接 Agent")
 
         server = db.query(Server).filter_by(agent_key=agent_key).first()
+        require_public_audit = _get_platform_bool_setting(
+            "platform.server.require_audit_before_public", True
+        )
+        require_online_audit = _get_platform_bool_setting(
+            "platform.server.require_audit_before_online", True
+        )
+        needs_audit = require_public_audit or require_online_audit
+        initial_audit_status = "pending" if needs_audit else "approved"
+        initial_platform_status = "inactive" if require_online_audit else "active"
+        initial_platform_public = bool(req.is_public) and not require_public_audit and initial_platform_status == "active"
 
         if server is None:
             server = Server(
                 name=req.name,
                 description=req.description,
                 agent_key=agent_key,
+                server_code=_generate_server_code(db),
                 owner_id=user_id,
                 is_public=req.is_public,
+                platform_status=initial_platform_status,
+                platform_audit_status=initial_audit_status,
+                platform_is_public=initial_platform_public,
+                join_requires_approval=req.join_requires_approval,
                 game_ip=req.game_ip or "",
                 game_port=req.game_port,
                 qq_group=req.qq_group or "",
@@ -313,30 +697,37 @@ def claim_server(
             raise HTTPException(409, "该服务器已被认领，无法重复认领")
         else:
             server.owner_id = user_id
+            if not (server.server_code or "").strip():
+                server.server_code = _generate_server_code(db)
             server.name = req.name
             server.description = req.description
             server.is_public = req.is_public
+            server.platform_status = initial_platform_status
+            server.platform_audit_status = initial_audit_status
+            server.platform_audit_reason = None
+            server.platform_audit_by = None
+            server.platform_audit_at = None
+            server.platform_is_public = initial_platform_public
+            server.join_requires_approval = req.join_requires_approval
             server.game_ip = req.game_ip or ""
             server.game_port = req.game_port
             server.qq_group = req.qq_group or ""
             server.game_version = req.game_version or ""
             server.show_ip = req.show_ip
 
-        existing = db.query(ServerMember).filter_by(
-            server_id=server.id, user_id=user_id
-        ).first()
-        if not existing:
-            db.add(ServerMember(
-                server_id=server.id,
-                user_id=user_id,
-                role=ServerMemberRole.owner,
-                joined_at=int(time.time()),
-            ))
+        add_member(
+            db=db,
+            server_id=server.id,
+            user_id=user_id,
+            source="owner_claim",
+            role=ServerMemberRole.owner,
+            joined_by_user_id=user_id,
+        )
 
         db.commit()
         db.refresh(server)
         # 为服务器初始化默认面板权限组
-        _init_server_panel_groups(server.id)
+        _init_server_roles(server.id)
         return _server_to_out(server, db, user_id=user_id)
     except HTTPException:
         raise
@@ -345,41 +736,534 @@ def claim_server(
         raise HTTPException(500, f"数据库错误: {e}")
 
 
-# ── 加入服务器 ───────────────────────────────────────────────────
+# ── 统一入服申请 ────────────────────────────────────────────────
 
-@router.post("/join", response_model=ServerOut, summary="加入已认领的服务器成为 Member")
-def join_server(
+def _submit_join_request(
+    server: Server,
+    applicant_user_id: int,
+    message: str,
+    db: Session,
+):
+    server_id = int(server.id)
+    if server.owner_id is None:
+        raise HTTPException(400, "该服务器尚未被认领")
+    if getattr(server, "platform_status", "active") != "active":
+        raise HTTPException(403, "该服务器已被平台下架或未启用，暂不能申请加入")
+    if getattr(server, "platform_audit_status", "pending") != "approved":
+        raise HTTPException(403, "该服务器尚未通过平台审核，暂不能申请加入")
+
+    existing_member = db.query(ServerMember).filter_by(server_id=server_id, user_id=applicant_user_id).first()
+    if existing_member:
+        raise HTTPException(409, "您已在该服务器中")
+
+    now_ts = int(time.time())
+    normalized_message = (message or "").strip()
+    auto_reject = False
+    auto_reject_note = ""
+    reject_reason_text = ""
+    auto_approve = not bool(getattr(server, "join_requires_approval", False))
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        blacklist_summary = _blacklist_summary_for_user(conn, server_id, applicant_user_id)
+        cloud_threshold = _normalize_blacklist_auto_reject_count(getattr(server, "blacklist_auto_reject_count", 0))
+        if blacklist_summary["server_blacklist_count"] > 0:
+            auto_reject = True
+            auto_reject_note = "该账号已在本服务器黑名单中"
+        elif cloud_threshold > 0 and blacklist_summary["cloud_blacklist_count"] >= cloud_threshold:
+            auto_reject = True
+            auto_reject_note = f"平台云黑记录达到 {cloud_threshold} 条"
+
+        if auto_reject:
+            reject_detail = _blacklist_primary_reason(
+                blacklist_summary,
+                "server" if blacklist_summary["server_blacklist_count"] > 0 else "cloud",
+            )
+            reject_reason_text = f"{auto_reject_note}：{reject_detail}" if reject_detail else auto_reject_note
+            return {
+                "ok": True,
+                "request_id": None,
+                "status": "rejected",
+                "auto_approved": False,
+                "auto_rejected": True,
+                "reject_reason": reject_reason_text,
+                "blacklist": blacklist_summary,
+            }
+
+        status = "approved" if auto_approve else "pending"
+        reviewed_by_user_id = int(server.owner_id) if auto_approve else None
+        reviewed_at = now_ts if auto_approve else None
+        review_note = "审核关闭，自动通过" if auto_approve else ""
+
+        pending = conn.execute(
+            """
+            SELECT id FROM server_member_requests
+            WHERE server_id=? AND request_type='join' AND from_user_id=? AND status='pending'
+            """,
+            (server_id, applicant_user_id),
+        ).fetchone()
+        if pending:
+            raise HTTPException(409, "您已有待处理申请，请勿重复提交")
+
+        cur = conn.execute(
+            """
+            INSERT INTO server_member_requests(
+                server_id, request_type, from_user_id, to_user_id, message,
+                status, reviewed_by_user_id, reviewed_at,
+                review_note, withdrawn_at, expires_at, acted_at,
+                created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                server_id,
+                "join",
+                applicant_user_id,
+                None,
+                normalized_message,
+                status,
+                reviewed_by_user_id,
+                reviewed_at,
+                review_note,
+                None,
+                None,
+                None,
+                now_ts,
+                now_ts,
+            ),
+        )
+        conn.commit()
+        request_id = int(cur.lastrowid)
+
+    if auto_approve:
+        try:
+            add_member(
+                db=db,
+                server_id=server_id,
+                user_id=applicant_user_id,
+                source="join_request_approved",
+                role=ServerMemberRole.member,
+                source_ref_type="join_request",
+                source_ref_id=request_id,
+                joined_by_user_id=int(server.owner_id),
+            )
+            db.commit()
+        except SQLAlchemyError as e:
+            db.rollback()
+            raise HTTPException(500, f"数据库错误: {e}")
+
+        create_notification(
+            receiver_user_id=applicant_user_id,
+            sender_user_id=int(server.owner_id) if server.owner_id else None,
+            server_id=server_id,
+            msg_type="join_request_result",
+            ref_type="join_request",
+            ref_id=request_id,
+            title="入服申请结果",
+            content="你的入服申请已自动通过",
+            payload={"server_id": server_id, "request_id": request_id, "status": "approved", "auto": True},
+        )
+
+    _notify_join_reviewers(
+        db=db,
+        server=server,
+        request_id=request_id,
+        applicant_user_id=applicant_user_id,
+        status=status,
+        blacklist_summary=blacklist_summary,
+        review_note=review_note,
+    )
+
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "status": status,
+        "auto_approved": auto_approve,
+        "auto_rejected": False,
+        "reject_reason": "",
+        "blacklist": blacklist_summary,
+    }
+
+
+@router.post("/apply", summary="按服务器编号提交入服申请")
+def apply_join_request_by_code(
     req: ServerJoinReq,
     db: Session = Depends(get_db),
     user_id: int = Depends(_get_user_id),
 ):
-    try:
-        server = db.query(Server).filter_by(id=req.server_id).first()
-        if not server:
-            raise HTTPException(404, "服务器不存在")
-        if server.owner_id is None:
-            raise HTTPException(400, "该服务器尚未被认领，无法加入")
+    code = _normalize_server_code(req.server_code)
+    if not code:
+        raise HTTPException(400, "服务器编号不能为空")
+    server = db.query(Server).filter_by(server_code=code).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+    return _submit_join_request(server, user_id, "", db)
 
-        existing = db.query(ServerMember).filter_by(
-            server_id=server.id, user_id=user_id
-        ).first()
-        if existing:
-            raise HTTPException(409, "您已在该服务器中")
 
-        db.add(ServerMember(
-            server_id=server.id,
-            user_id=user_id,
-            role=ServerMemberRole.member,
-            joined_at=int(time.time()),
-        ))
-        db.commit()
-        db.refresh(server)
-        return _server_to_out(server, db, user_id=user_id)
-    except HTTPException:
-        raise
-    except SQLAlchemyError as e:
-        db.rollback()
-        raise HTTPException(500, f"数据库错误: {e}")
+@router.post("/{server_id}/apply", summary="提交入服申请")
+def apply_join_request(
+    server_id: int,
+    req: ServerApplyReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = db.query(Server).filter_by(id=server_id).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+    return _submit_join_request(server, user_id, req.message or "", db)
+
+
+@router.get("/{server_id}/join-requests", response_model=List[JoinRequestOut], summary="列出入服申请（服主/授权管理）")
+def list_join_requests(
+    server_id: int,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.membership.review", "panel.users"],
+        "仅服主或具备审批权限的管理员可查看申请",
+    )
+    valid_status = {"pending", "approved", "rejected", "withdrawn"}
+    if status and status not in valid_status:
+        raise HTTPException(400, "状态无效")
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        sql = """
+            SELECT
+                r.id, r.server_id, r.applicant_user_id, au.email AS applicant_email,
+                r.message, r.status, r.reviewed_by_user_id,
+                ru.email AS reviewed_by_email,
+                r.review_note, r.created_at, r.updated_at, r.withdrawn_at
+            FROM (
+                SELECT *, from_user_id AS applicant_user_id
+                FROM server_member_requests
+                WHERE request_type='join'
+            ) r
+            JOIN users au ON au.id = r.applicant_user_id
+            LEFT JOIN users ru ON ru.id = r.reviewed_by_user_id
+            WHERE r.server_id=?
+        """
+        params = [server_id]
+        if status:
+            sql += " AND r.status=?"
+            params.append(status)
+        sql += " ORDER BY r.created_at DESC, r.id DESC"
+        rows = conn.execute(sql, tuple(params)).fetchall()
+
+    return _join_request_rows_with_blacklist(rows, server_id)
+
+
+@router.post("/{server_id}/join-requests/{request_id}/withdraw", summary="撤回入服申请（申请人）")
+def withdraw_join_request(
+    server_id: int,
+    request_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = db.query(Server).filter_by(id=server_id).first()
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+
+    now_ts = int(time.time())
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        row = conn.execute(
+            """
+            SELECT id, status FROM server_member_requests
+            WHERE id=? AND server_id=? AND request_type='join' AND from_user_id=?
+            """,
+            (request_id, server_id, user_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "申请不存在")
+        if row[1] != "pending":
+            raise HTTPException(409, f"当前申请状态为 {row[1]}，不可撤回")
+
+        conn.execute(
+            """
+            UPDATE server_member_requests
+            SET status='withdrawn', withdrawn_at=?, updated_at=?
+            WHERE id=? AND request_type='join'
+            """,
+            (now_ts, now_ts, request_id),
+        )
+        conn.commit()
+
+    return {"ok": True, "status": "withdrawn"}
+
+
+@router.post("/{server_id}/join-requests/{request_id}/approve", summary="批准入服申请（服主/授权管理）")
+def approve_join_request(
+    server_id: int,
+    request_id: int,
+    req: JoinRequestReviewReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.membership.review", "panel.users"],
+        "仅服主或具备审批权限的管理员可批准申请",
+    )
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT id, applicant_user_id, status
+            FROM (
+                SELECT *, from_user_id AS applicant_user_id
+                FROM server_member_requests
+                WHERE request_type='join'
+            )
+            WHERE id=? AND server_id=?
+            """,
+            (request_id, server_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "申请不存在")
+    if row["status"] != "pending":
+        raise HTTPException(409, f"当前申请状态为 {row['status']}，不可批准")
+
+    applicant_user_id = int(row["applicant_user_id"])
+    existing_member = db.query(ServerMember).filter_by(server_id=server_id, user_id=applicant_user_id).first()
+    if not existing_member:
+        try:
+            add_member(
+                db=db,
+                server_id=server_id,
+                user_id=applicant_user_id,
+                source="join_request_approved",
+                role=ServerMemberRole.member,
+                source_ref_type="join_request",
+                source_ref_id=request_id,
+                joined_by_user_id=user_id,
+            )
+            db.commit()
+        except SQLAlchemyError as e:
+            db.rollback()
+            raise HTTPException(500, f"数据库错误: {e}")
+
+    now_ts = int(time.time())
+    review_note = (req.note or "").strip()
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        conn.execute(
+            """
+            UPDATE server_member_requests
+            SET status='approved', reviewed_by_user_id=?, reviewed_at=?, review_note=?, updated_at=?
+            WHERE id=? AND request_type='join'
+            """,
+            (user_id, now_ts, review_note, now_ts, request_id),
+        )
+        conn.commit()
+
+    create_notification(
+        receiver_user_id=applicant_user_id,
+        sender_user_id=user_id,
+        server_id=server_id,
+        msg_type="join_request_result",
+        ref_type="join_request",
+        ref_id=request_id,
+        title="入服申请结果",
+        content="你的入服申请已通过",
+        payload={"server_id": server_id, "request_id": request_id, "status": "approved"},
+    )
+
+    return {"ok": True, "status": "approved"}
+
+
+@router.post("/{server_id}/join-requests/{request_id}/reject", summary="拒绝入服申请（服主/授权管理）")
+def reject_join_request(
+    server_id: int,
+    request_id: int,
+    req: JoinRequestReviewReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.membership.review", "panel.users"],
+        "仅服主或具备审批权限的管理员可拒绝申请",
+    )
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT id, applicant_user_id, status
+            FROM (
+                SELECT *, from_user_id AS applicant_user_id
+                FROM server_member_requests
+                WHERE request_type='join'
+            )
+            WHERE id=? AND server_id=?
+            """,
+            (request_id, server_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "申请不存在")
+        if row["status"] != "pending":
+            raise HTTPException(409, f"当前申请状态为 {row['status']}，不可拒绝")
+
+        now_ts = int(time.time())
+        review_note = (req.note or "").strip()
+        conn.execute(
+            """
+            UPDATE server_member_requests
+            SET status='rejected', reviewed_by_user_id=?, reviewed_at=?, review_note=?, updated_at=?
+            WHERE id=? AND request_type='join'
+            """,
+            (user_id, now_ts, review_note, now_ts, request_id),
+        )
+        conn.commit()
+
+    create_notification(
+        receiver_user_id=int(row["applicant_user_id"]),
+        sender_user_id=user_id,
+        server_id=server_id,
+        msg_type="join_request_rejected",
+        ref_type="join_request",
+        ref_id=request_id,
+        title="入服申请结果",
+        content=f"你的入服申请未通过{('，原因：' + review_note) if review_note else ''}",
+        payload={"server_id": server_id, "request_id": request_id, "status": "rejected", "note": review_note},
+    )
+
+    return {"ok": True, "status": "rejected"}
+
+
+@router.post("/{server_id}/invites", summary="服主/授权管理邀请用户加入服务器")
+def create_server_invite(
+    server_id: int,
+    req: ServerInviteCreateReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.invites.manage", "panel.membership.review", "panel.users"],
+        "仅服主或具备邀请权限的管理员可发送邀请",
+    )
+    invitee_email = normalize_qq_email(req.invitee_email, "请输入受邀用户的 QQ 号或 QQ 邮箱")
+    invitee_user_id = _get_user_id_by_email(invitee_email)
+    if not invitee_user_id:
+        raise HTTPException(404, "受邀用户不存在")
+    if invitee_user_id == user_id:
+        raise HTTPException(400, "不能邀请自己")
+
+    existing_member = db.query(ServerMember).filter_by(server_id=server_id, user_id=invitee_user_id).first()
+    if existing_member:
+        raise HTTPException(409, "该用户已是服务器成员")
+
+    now_ts = int(time.time())
+    expires_in_hours = int(req.expires_in_hours or 72)
+    expires_at = now_ts + max(1, min(720, expires_in_hours)) * 3600
+    message = (req.message or "").strip()
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        pending = conn.execute(
+            """
+            SELECT id FROM server_member_requests
+            WHERE server_id=? AND request_type='invite' AND to_user_id=? AND status='pending'
+            """,
+            (server_id, invitee_user_id),
+        ).fetchone()
+        if pending:
+            raise HTTPException(409, "该用户已有待处理邀请")
+
+        cur = conn.execute(
+            """
+            INSERT INTO server_member_requests(
+                server_id, request_type, from_user_id, to_user_id,
+                message, status, expires_at, acted_at,
+                created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                server_id,
+                "invite",
+                user_id,
+                invitee_user_id,
+                message,
+                "pending",
+                expires_at,
+                None,
+                now_ts,
+                now_ts,
+            ),
+        )
+        conn.commit()
+        invite_id = int(cur.lastrowid)
+
+    create_notification(
+        receiver_user_id=invitee_user_id,
+        sender_user_id=user_id,
+        server_id=server_id,
+        msg_type="invite",
+        ref_type="invite",
+        ref_id=invite_id,
+        title="收到服务器邀请",
+        content=f"你收到加入服务器 {server.name} 的邀请",
+        payload={"server_id": server_id, "invite_id": invite_id, "expires_at": expires_at},
+    )
+
+    return {"ok": True, "invite_id": invite_id, "status": "pending", "expires_at": expires_at}
+
+
+@router.get("/{server_id}/invites", response_model=List[ServerInviteOut], summary="列出服务器邀请记录（服主/授权管理）")
+def list_server_invites(
+    server_id: int,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.invites.manage", "panel.membership.review", "panel.users"],
+        "仅服主或具备邀请权限的管理员可查看邀请记录",
+    )
+    valid_status = {"pending", "accepted", "rejected", "canceled", "expired"}
+    if status and status not in valid_status:
+        raise HTTPException(400, "状态无效")
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        sql = """
+            SELECT
+                i.id, i.server_id, COALESCE(s.name, '') AS server_name,
+                COALESCE(s.server_code, '') AS server_code,
+                i.inviter_user_id, inviter.email AS inviter_email,
+                i.invitee_user_id, invitee.email AS invitee_email,
+                i.message, i.status, i.expires_at, i.acted_at,
+                i.created_at, i.updated_at
+            FROM (
+                SELECT *, from_user_id AS inviter_user_id, to_user_id AS invitee_user_id
+                FROM server_member_requests
+                WHERE request_type='invite'
+            ) i
+            LEFT JOIN servers s ON s.id = i.server_id
+            JOIN users inviter ON inviter.id = i.inviter_user_id
+            JOIN users invitee ON invitee.id = i.invitee_user_id
+            WHERE i.server_id=?
+        """
+        params = [server_id]
+        if status:
+            sql += " AND i.status=?"
+            params.append(status)
+        sql += " ORDER BY i.created_at DESC, i.id DESC"
+        rows = conn.execute(sql, tuple(params)).fetchall()
+
+    return [ServerInviteOut(**dict(r)) for r in rows]
 
 
 # ── 查询当前用户参与的服务器 ─────────────────────────────────────
@@ -408,7 +1292,12 @@ def list_public_servers(
     user_id: int = Depends(_get_user_id),
 ):
     try:
-        servers_q = db.query(Server).filter_by(is_public=True).all()
+        servers_q = db.query(Server).filter(
+            Server.is_public == True,
+            Server.platform_is_public == True,
+            Server.platform_status == "active",
+            Server.platform_audit_status == "approved",
+        ).all()
         result = []
         for s in servers_q:
             out = _server_to_out(s, db, user_id=user_id)
@@ -442,8 +1331,8 @@ def get_server(
         with sqlite3.connect(AUTH_DB_PATH) as _conn:
             for m in db.query(ServerMember).filter_by(server_id=server_id).all():
                 pg_row = _conn.execute(
-                    "SELECT spg.id, spg.name FROM server_member_panel_groups smpg "
-                    "JOIN server_panel_groups spg ON spg.id = smpg.group_id "
+                    "SELECT spg.id, spg.name FROM server_member_roles smpg "
+                    "JOIN server_roles spg ON spg.id = smpg.group_id "
                     "WHERE smpg.server_id=? AND smpg.user_id=?",
                     (server_id, m.user_id),
                 ).fetchone()
@@ -467,7 +1356,7 @@ def get_server(
 # ── 离开服务器 ───────────────────────────────────────────────────
 
 @router.delete("/{server_id}/leave", summary="离开服务器")
-def leave_server(
+async def leave_server(
     server_id: int,
     db: Session = Depends(get_db),
     user_id: int = Depends(_get_user_id),
@@ -486,6 +1375,7 @@ def leave_server(
             raise HTTPException(404, "您不在该服务器中")
 
         db.delete(member)
+        await _delete_user_server_local_state(db, server_id, user_id, server.agent_key)
         db.commit()
         return {"ok": True}
     except HTTPException:
@@ -498,7 +1388,7 @@ def leave_server(
 # ── 踢出成员（Owner 专属）────────────────────────────────────────
 
 @router.delete("/{server_id}/members/{target_user_id}", summary="踢出成员（Owner 专属）")
-def kick_member(
+async def kick_member(
     server_id: int,
     target_user_id: int,
     db: Session = Depends(get_db),
@@ -520,6 +1410,7 @@ def kick_member(
             raise HTTPException(404, "目标用户不在该服务器中")
 
         db.delete(member)
+        await _delete_user_server_local_state(db, server_id, target_user_id, server.agent_key)
         db.commit()
         return {"ok": True}
     except HTTPException:
@@ -527,6 +1418,195 @@ def kick_member(
     except SQLAlchemyError as e:
         db.rollback()
         raise HTTPException(500, f"数据库错误: {e}")
+
+
+# ── 黑名单管理 ───────────────────────────────────────────────────
+
+@router.get("/{server_id}/blacklist", summary="列出本服务器黑名单")
+def list_server_blacklist(
+    server_id: int,
+    q: str = "",
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.blacklist", "panel.users"],
+        "无权限，需要服务器 Owner 或黑名单管理权限",
+    )
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        where_sql = "b.server_id=? AND b.status='active'"
+        params = [server_id]
+        keyword = (q or "").strip()
+        if keyword:
+            like = f"%{keyword}%"
+            where_sql += """
+                AND (
+                    b.target_email LIKE ?
+                    OR b.reason LIKE ?
+                    OR cu.email LIKE ?
+                    OR CAST(b.target_user_id AS TEXT) LIKE ?
+                )
+            """
+            params.extend([like, like, like, like])
+        rows = conn.execute(
+            f"""
+            SELECT
+                b.id, b.server_id, b.target_user_id, b.target_email,
+                b.reason, b.status, b.created_by_user_id,
+                cu.email AS created_by_email,
+                b.created_at, b.removed_by_user_id, b.removed_at
+            FROM agent_server_blacklist_cache b
+            LEFT JOIN users cu ON cu.id = b.created_by_user_id
+            WHERE {where_sql}
+            ORDER BY b.created_at DESC, b.id DESC
+            """,
+            tuple(params),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("/{server_id}/blacklist", summary="加入本服务器黑名单")
+async def add_server_blacklist(
+    server_id: int,
+    req: BlacklistCreateReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.blacklist", "panel.users"],
+        "无权限，需要服务器 Owner 或黑名单管理权限",
+    )
+    target_user_id = int(req.target_user_id)
+    if target_user_id == server.owner_id:
+        raise HTTPException(400, "不能将服务器服主加入本服务器黑名单")
+    target_email = _get_user_email(target_user_id)
+    if not target_email:
+        raise HTTPException(404, "目标账号不存在")
+
+    now_ts = int(time.time())
+    reason = (req.reason or "").strip()
+    operator_email = _get_user_email(user_id) or ""
+    agent_row = await add_blacklist_on_agent(
+        server.agent_key,
+        target_user_id,
+        target_email,
+        reason,
+        user_id,
+        operator_email,
+    )
+    created_at = int(agent_row.get("created_at") or now_ts)
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_server_blacklist_cache(
+                    server_id, target_user_id, target_email, reason,
+                    status, created_by_user_id, created_at
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                (server_id, target_user_id, target_email, reason, "active", user_id, created_at),
+            )
+            conn.commit()
+    except sqlite3.IntegrityError:
+        pass
+
+    return {"ok": True}
+
+
+@router.delete("/{server_id}/blacklist/{entry_id}", summary="移除本服务器黑名单")
+async def remove_server_blacklist(
+    server_id: int,
+    entry_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.blacklist", "panel.users"],
+        "无权限，需要服务器 Owner 或黑名单管理权限",
+    )
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT target_user_id FROM agent_server_blacklist_cache WHERE id=? AND server_id=? AND status='active'",
+            (entry_id, server_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "黑名单记录不存在")
+
+    operator_email = _get_user_email(user_id) or ""
+    agent_row = await remove_blacklist_on_agent(
+        server.agent_key,
+        int(row[0]),
+        user_id,
+        operator_email,
+    )
+    now_ts = int(agent_row.get("removed_at") or time.time())
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        cur = conn.execute(
+            """
+            UPDATE agent_server_blacklist_cache
+            SET status='removed', removed_by_user_id=?, removed_at=?
+            WHERE id=? AND server_id=? AND status='active'
+            """,
+            (user_id, now_ts, entry_id, server_id),
+        )
+        conn.commit()
+    if int(cur.rowcount or 0) <= 0:
+        raise HTTPException(404, "黑名单记录不存在")
+    return {"ok": True}
+
+
+@router.post("/{server_id}/cloud-blacklist-submissions", summary="提交平台云黑审核")
+def submit_cloud_blacklist(
+    server_id: int,
+    req: BlacklistCreateReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = _require_server_manage_perms(
+        server_id,
+        user_id,
+        db,
+        ["panel.blacklist", "panel.users"],
+        "无权限，需要服务器 Owner 或黑名单管理权限",
+    )
+    target_user_id = int(req.target_user_id)
+    if target_user_id == server.owner_id:
+        raise HTTPException(400, "不能将服务器服主提交到平台云黑")
+    reason = (req.reason or "").strip()
+    if not reason:
+        raise HTTPException(400, "提交平台云黑必须填写原因")
+    target_email = _get_user_email(target_user_id)
+    if not target_email:
+        raise HTTPException(404, "目标账号不存在")
+
+    now_ts = int(time.time())
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO cloud_blacklist_entries(
+                    target_user_id, target_email, source_server_id,
+                    reason, status, submitted_by_user_id, submitted_at
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                (target_user_id, target_email, server_id, reason, "pending", user_id, now_ts),
+            )
+            conn.commit()
+            submission_id = int(cur.lastrowid)
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "该账号已有来自本服务器的待审核或已通过云黑记录")
+
+    return {"ok": True, "submission_id": submission_id, "status": "pending"}
 
 
 # ── 解散服务器（Owner 专属）──────────────────────────────────────
@@ -544,6 +1624,25 @@ def dissolve_server(
         if server.owner_id != user_id:
             raise HTTPException(403, "仅 Owner 可解散服务器")
 
+        agent_key = server.agent_key
+        group_ids = [
+            row[0] for row in db.execute(
+                text("SELECT id FROM server_roles WHERE server_id = :sid"),
+                {"sid": server_id},
+            ).fetchall()
+        ]
+        if group_ids:
+            placeholders = ",".join(str(int(v)) for v in group_ids)
+            db.execute(text(f"DELETE FROM server_role_permissions WHERE group_id IN ({placeholders})"))
+        db.execute(text("DELETE FROM server_member_roles WHERE server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM server_roles WHERE server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM server_member_requests WHERE server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM agent_server_blacklist_cache WHERE server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM cloud_blacklist_entries WHERE source_server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM messages WHERE server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM announcements WHERE server_id = :sid"), {"sid": server_id})
+        if agent_key:
+            db.execute(text("DELETE FROM agent_character_bindings_cache WHERE agent_key = :agent_key"), {"agent_key": agent_key})
         db.delete(server)
         db.commit()
         return {"ok": True}
@@ -576,7 +1675,33 @@ def update_server(
     if req.description is not None:
         server.description = req.description
     if req.is_public is not None:
+        was_user_public = bool(server.is_public)
+        was_platform_public = bool(getattr(server, "platform_is_public", False))
+        require_public_audit = _get_platform_bool_setting("platform.server.require_audit_before_public", True)
         server.is_public = req.is_public
+        if not req.is_public:
+            server.platform_is_public = False
+        elif require_public_audit:
+            already_publicly_approved = (
+                was_user_public
+                and was_platform_public
+                and server.platform_audit_status == "approved"
+            )
+            if not already_publicly_approved:
+                server.platform_is_public = False
+                server.platform_audit_status = "pending"
+                server.platform_audit_reason = "申请公开展示，等待平台审核"
+                server.platform_audit_by = None
+                server.platform_audit_at = None
+        elif (
+            server.platform_status == "active"
+            and server.platform_audit_status == "approved"
+        ):
+            server.platform_is_public = True
+        else:
+            server.platform_is_public = False
+    if req.join_requires_approval is not None:
+        server.join_requires_approval = req.join_requires_approval
     if req.game_ip is not None:
         server.game_ip = req.game_ip
     if req.game_port is not None:
@@ -603,9 +1728,13 @@ def update_server(
         raise HTTPException(500, f"数据库错误: {e}")
     member_count = db.query(ServerMember).filter_by(server_id=server_id).count()
     return ServerOut(
-        id=server.id, name=server.name, description=server.description or "",
+        id=server.id,
+        server_code=(server.server_code or ""),
+        name=server.name,
+        description=server.description or "",
         agent_key=server.agent_key, owner_id=server.owner_id,
         created_at=server.created_at, is_public=bool(server.is_public),
+        join_requires_approval=bool(getattr(server, "join_requires_approval", False)),
         online=server.agent_key in manager.active_agents,
         member_count=member_count,
         game_ip=server.game_ip or "",
@@ -614,8 +1743,14 @@ def update_server(
         game_version=server.game_version or "",
         show_ip=bool(server.show_ip) if server.show_ip is not None else True,
         register_limit=_normalize_register_limit(getattr(server, "register_limit", 1)),
+        character_name_regex=_normalize_character_name_regex(getattr(server, "character_name_regex", DEFAULT_CHARACTER_NAME_REGEX)),
+        character_name_max_length=_normalize_character_name_max_length(getattr(server, "character_name_max_length", DEFAULT_CHARACTER_NAME_MAX_LENGTH)),
+        platform_status=getattr(server, "platform_status", "active") or "active",
+        platform_audit_status=getattr(server, "platform_audit_status", "pending") or "pending",
+        platform_audit_reason=getattr(server, "platform_audit_reason", None),
+        platform_is_public=bool(getattr(server, "platform_is_public", False)),
         local_start_enabled=bool(server.local_start_enabled) if server.local_start_enabled is not None else False,
-        local_start_path=server.local_start_path or "",
+        local_start_path=_expose_local_start_path(server.local_start_path or ""),
     )
 
 
@@ -674,7 +1809,7 @@ def get_member_characters(
         raise HTTPException(404, "服务器不存在")
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         rows = conn.execute(
-            "SELECT character_name, registered_at FROM game_characters "
+            "SELECT character_name, registered_at FROM agent_character_bindings_cache "
             "WHERE user_id=? AND agent_key=? ORDER BY registered_at DESC",
             (target_user_id, server.agent_key),
         ).fetchall()
@@ -697,7 +1832,7 @@ def get_my_characters(
         raise HTTPException(404, "服务器不存在")
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         rows = conn.execute(
-            "SELECT character_name, registered_at FROM game_characters "
+            "SELECT character_name, registered_at FROM agent_character_bindings_cache "
             "WHERE user_id=? AND agent_key=? ORDER BY registered_at DESC",
             (user_id, server.agent_key),
         ).fetchall()
@@ -720,15 +1855,16 @@ async def delete_my_character(
     if not server:
         raise HTTPException(404, "服务器不存在")
 
+    await delete_character_on_agent(server.agent_key, character_name, user_id)
+
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT id FROM game_characters WHERE user_id=? AND agent_key=? AND character_name=?",
+            "SELECT id FROM agent_character_bindings_cache WHERE user_id=? AND agent_key=? AND character_name=?",
             (user_id, server.agent_key, character_name),
         ).fetchone()
-        if not row:
-            raise HTTPException(404, "角色不存在或不属于您")
-        conn.execute("DELETE FROM game_characters WHERE id=?", (row[0],))
-        conn.commit()
+        if row:
+            conn.execute("DELETE FROM agent_character_bindings_cache WHERE id=?", (row[0],))
+            conn.commit()
 
     operator_email = _get_user_email(user_id)
     _fire_delete_user(server.agent_key, character_name, operator_email)
@@ -752,15 +1888,16 @@ async def delete_member_character(
     if not server:
         raise HTTPException(404, "服务器不存在")
 
+    await delete_character_on_agent(server.agent_key, character_name, target_user_id)
+
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT id FROM game_characters WHERE user_id=? AND agent_key=? AND character_name=?",
+            "SELECT id FROM agent_character_bindings_cache WHERE user_id=? AND agent_key=? AND character_name=?",
             (target_user_id, server.agent_key, character_name),
         ).fetchone()
-        if not row:
-            raise HTTPException(404, "角色不存在")
-        conn.execute("DELETE FROM game_characters WHERE id=?", (row[0],))
-        conn.commit()
+        if row:
+            conn.execute("DELETE FROM agent_character_bindings_cache WHERE id=?", (row[0],))
+            conn.commit()
 
     operator_email = _get_user_email(user_id)
     _fire_delete_user(server.agent_key, character_name, operator_email)
@@ -863,7 +2000,7 @@ def _resolve_character_binding(conn: sqlite3.Connection, agent_key: str, raw_nam
         return None
 
     row = conn.execute(
-        "SELECT id, character_name FROM game_characters WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+        "SELECT id, character_name FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
         (agent_key, trimmed),
     ).fetchone()
     if row:
@@ -873,7 +2010,7 @@ def _resolve_character_binding(conn: sqlite3.Connection, agent_key: str, raw_nam
     canonical = _canonicalize_character_name(trimmed)
     if canonical and canonical.lower() != trimmed.lower():
         row = conn.execute(
-            "SELECT id, character_name FROM game_characters WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+            "SELECT id, character_name FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
             (agent_key, canonical),
         ).fetchone()
         if row:
@@ -881,7 +2018,7 @@ def _resolve_character_binding(conn: sqlite3.Connection, agent_key: str, raw_nam
 
     # 3) 最后做一次模糊规范化比较，避免历史脏数据导致漏删
     rows = conn.execute(
-        "SELECT id, character_name FROM game_characters WHERE agent_key=?",
+        "SELECT id, character_name FROM agent_character_bindings_cache WHERE agent_key=?",
         (agent_key,),
     ).fetchall()
     matched = [
@@ -896,7 +2033,7 @@ def _resolve_character_binding(conn: sqlite3.Connection, agent_key: str, raw_nam
     return None
 
 
-def _delete_game_account_impl(
+async def _delete_game_account_impl(
     server_id: int,
     character_name: str,
     db: Session,
@@ -919,13 +2056,19 @@ def _delete_game_account_impl(
         row = _resolve_character_binding(conn, server.agent_key, incoming_name)
         if row:
             bind_id, stored_name = row
-            conn.execute("DELETE FROM game_characters WHERE id=?", (bind_id,))
-            conn.commit()
             removed_binding = True
             resolved_name = stored_name or incoming_name
 
     operator_email = _get_user_email(user_id)
     dispatch_name = _canonicalize_character_name(resolved_name) or resolved_name
+    if removed_binding:
+        await delete_character_on_agent(server.agent_key, dispatch_name)
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            conn.execute(
+                "DELETE FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+                (server.agent_key, dispatch_name),
+            )
+            conn.commit()
     agent_key_matched = _is_agent_connected(server.agent_key)
     agent_connected = _has_any_agent_connected()
     agent_dispatched = _fire_delete_user(server.agent_key, dispatch_name, operator_email)
@@ -951,7 +2094,7 @@ def _delete_game_account_impl(
 # ── 绑定已有游戏角色（验证码校验）────────────────────────────────────────
 
 @router.post("/{server_id}/bind-verify", summary="验证绑定验证码并完成角色绑定")
-def bind_verify(
+async def bind_verify(
     server_id: int,
     req: BindVerifyReq,
     db: Session = Depends(get_db),
@@ -966,7 +2109,8 @@ def bind_verify(
     if not server:
         raise HTTPException(404, "服务器不存在")
 
-    key = (server.agent_key, req.username.strip().lower())
+    _validate_character_name_policy(server, req.username)
+    key = (server.agent_key, req.username.lower())
     entry = _bind_codes.get(key)
     if not entry:
         raise HTTPException(400, "验证码不存在或已过期，请重新发送")
@@ -984,10 +2128,10 @@ def bind_verify(
     # 一次性消费
     _bind_codes.pop(key, None)
 
-    real_username = req.username.strip()
+    real_username = req.username
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         existing = conn.execute(
-            "SELECT id FROM game_characters WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+            "SELECT id FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
             (server.agent_key, real_username),
         ).fetchone()
         if existing:
@@ -995,10 +2139,21 @@ def bind_verify(
 
         _assert_user_register_quota_available(conn, server, user_id)
 
+    cur_email = _get_user_email(user_id) or ""
+    agent_row = await bind_character_on_agent(
+        server.agent_key,
+        user_id,
+        cur_email,
+        real_username,
+        "bind_verify",
+    )
+
+    registered_at = int(agent_row.get("registered_at") or time.time())
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
         conn.execute(
-            "INSERT INTO game_characters (user_id, agent_key, character_name, registered_at) "
+            "INSERT OR REPLACE INTO agent_character_bindings_cache (user_id, agent_key, character_name, registered_at) "
             "VALUES (?, ?, ?, ?)",
-            (user_id, server.agent_key, real_username, int(time.time())),
+            (user_id, server.agent_key, real_username, registered_at),
         )
         conn.commit()
 
@@ -1023,7 +2178,7 @@ def get_character_map(
         rows = conn.execute(
             """
             SELECT gc.character_name, u.email
-            FROM game_characters gc
+            FROM agent_character_bindings_cache gc
             JOIN users u ON u.id = gc.user_id
             WHERE gc.agent_key = ?
             """,
@@ -1034,7 +2189,7 @@ def get_character_map(
 
 
 @router.post("/{server_id}/characters/assign", summary="手动分配/修改游戏账号归属（Owner/管理员）")
-def assign_character_owner(
+async def assign_character_owner(
     server_id: int,
     req: AssignCharacterOwnerReq,
     db: Session = Depends(get_db),
@@ -1053,13 +2208,23 @@ def assign_character_owner(
         if not target_member:
             raise HTTPException(404, "目标成员不在该服务器中")
 
-    character_name = (req.character_name or "").strip()
+    character_name = "" if req.character_name is None else str(req.character_name)
     if not character_name:
         raise HTTPException(400, "character_name 不能为空")
+    if target_user_id is not None:
+        _validate_character_name_policy(server, character_name)
+
+    target_email = _get_user_email(target_user_id) if target_user_id else ""
+    agent_resp = await assign_character_on_agent(
+        server.agent_key,
+        character_name,
+        target_user_id,
+        target_email or "",
+    )
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         exists = conn.execute(
-            "SELECT id, user_id, character_name FROM game_characters WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+            "SELECT id, user_id, character_name FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
             (server.agent_key, character_name),
         ).fetchone()
 
@@ -1068,7 +2233,7 @@ def assign_character_owner(
             # 允许设置为“无”：删除现有绑定
             if exists:
                 bind_id, prev_user_id, canonical_name = exists
-                conn.execute("DELETE FROM game_characters WHERE id=?", (bind_id,))
+                conn.execute("DELETE FROM agent_character_bindings_cache WHERE id=?", (bind_id,))
                 bound_name = canonical_name or character_name
                 action = "cleared"
             else:
@@ -1080,14 +2245,14 @@ def assign_character_owner(
                 action = "unchanged"
                 if int(prev_user_id) != target_user_id:
                     conn.execute(
-                        "UPDATE game_characters SET user_id=? WHERE id=?",
+                        "UPDATE agent_character_bindings_cache SET user_id=? WHERE id=?",
                         (target_user_id, bind_id),
                     )
                     action = "reassigned"
                 bound_name = canonical_name or character_name
             else:
                 conn.execute(
-                    "INSERT INTO game_characters (user_id, agent_key, character_name, registered_at) "
+                    "INSERT INTO agent_character_bindings_cache (user_id, agent_key, character_name, registered_at) "
                     "VALUES (?, ?, ?, ?)",
                     (target_user_id, server.agent_key, character_name, int(time.time())),
                 )
@@ -1096,10 +2261,9 @@ def assign_character_owner(
         conn.commit()
 
     previous_email = _get_user_email(prev_user_id) if prev_user_id else None
-    target_email = _get_user_email(target_user_id) if target_user_id else None
     return {
         "ok": True,
-        "action": action,
+        "action": agent_resp.get("action") or action,
         "character_name": bound_name,
         "target_user_id": target_user_id,
         "target_email": target_email,
@@ -1109,7 +2273,7 @@ def assign_character_owner(
 
 
 @router.delete("/{server_id}/characters", summary="删除游戏账号（绑定+TShock 账号）")
-def delete_game_account(
+async def delete_game_account(
     server_id: int,
     character_name: Optional[str] = None,
     db: Session = Depends(get_db),
@@ -1117,7 +2281,7 @@ def delete_game_account(
 ):
     if not isinstance(character_name, str) or not character_name.strip():
         raise HTTPException(400, "character_name 不能为空")
-    return _delete_game_account_impl(server_id, character_name.strip(), db, user_id)
+    return await _delete_game_account_impl(server_id, character_name.strip(), db, user_id)
 
 
 # ── 面板功能管理 ───────────────────────────────────────────────────────────
@@ -1129,12 +2293,7 @@ def get_panel_features(
     db: Session = Depends(get_db),
     user_id: int = Depends(_get_user_id),
 ):
-    if not _caller_can_manage(server_id, user_id, db, "panel.features"):
-        raise HTTPException(403, "无权限，需要服务器 Owner 或 panel.features 权限")
-
-    server = db.query(Server).filter_by(id=server_id).first()
-    if not server:
-        raise HTTPException(404, "服务器不存在")
+    server = _require_panel_features_manage(server_id, user_id, db)
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         current = _count_registered_characters(conn, server.agent_key, user_id=user_id)
@@ -1142,6 +2301,11 @@ def get_panel_features(
     return PanelFeatureSettingsOut(
         register_limit=_normalize_register_limit(getattr(server, "register_limit", 1)),
         registered_count=current,
+        join_requires_approval=bool(getattr(server, "join_requires_approval", False)),
+        blacklist_auto_reject_count=_normalize_blacklist_auto_reject_count(getattr(server, "blacklist_auto_reject_count", 0)),
+        character_name_regex=_normalize_character_name_regex(getattr(server, "character_name_regex", DEFAULT_CHARACTER_NAME_REGEX)),
+        character_name_max_length=_normalize_character_name_max_length(getattr(server, "character_name_max_length", DEFAULT_CHARACTER_NAME_MAX_LENGTH)),
+        server_code=(server.server_code or ""),
     )
 
 
@@ -1153,14 +2317,12 @@ def update_panel_features(
     db: Session = Depends(get_db),
     user_id: int = Depends(_get_user_id),
 ):
-    if not _caller_can_manage(server_id, user_id, db, "panel.features"):
-        raise HTTPException(403, "无权限，需要服务器 Owner 或 panel.features 权限")
-
-    server = db.query(Server).filter_by(id=server_id).first()
-    if not server:
-        raise HTTPException(404, "服务器不存在")
+    server = _require_panel_features_manage(server_id, user_id, db)
 
     server.register_limit = _normalize_register_limit(req.register_limit)
+    server.blacklist_auto_reject_count = _normalize_blacklist_auto_reject_count(req.blacklist_auto_reject_count)
+    server.character_name_regex = _normalize_character_name_regex(req.character_name_regex)
+    server.character_name_max_length = _normalize_character_name_max_length(req.character_name_max_length)
     try:
         db.commit()
         db.refresh(server)
@@ -1174,6 +2336,130 @@ def update_panel_features(
     return PanelFeatureSettingsOut(
         register_limit=_normalize_register_limit(getattr(server, "register_limit", 1)),
         registered_count=current,
+        join_requires_approval=bool(getattr(server, "join_requires_approval", False)),
+        blacklist_auto_reject_count=_normalize_blacklist_auto_reject_count(getattr(server, "blacklist_auto_reject_count", 0)),
+        character_name_regex=_normalize_character_name_regex(getattr(server, "character_name_regex", DEFAULT_CHARACTER_NAME_REGEX)),
+        character_name_max_length=_normalize_character_name_max_length(getattr(server, "character_name_max_length", DEFAULT_CHARACTER_NAME_MAX_LENGTH)),
+        server_code=(server.server_code or ""),
+    )
+
+
+@router.put("/{server_id}/panel-features/join-approval", response_model=PanelFeatureSettingsOut,
+            summary="更新入服审核开关（面板功能）")
+def update_panel_join_approval(
+    server_id: int,
+    req: dict,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    server = _require_panel_features_manage(server_id, user_id, db)
+    if server.owner_id != user_id:
+        raise HTTPException(403, "仅服主可修改入服审核开关")
+
+    value = bool(req.get("join_requires_approval", False))
+    server.join_requires_approval = value
+    try:
+        db.commit()
+        db.refresh(server)
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(500, f"数据库错误: {e}")
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        current = _count_registered_characters(conn, server.agent_key, user_id=user_id)
+
+    return PanelFeatureSettingsOut(
+        register_limit=_normalize_register_limit(getattr(server, "register_limit", 1)),
+        registered_count=current,
+        join_requires_approval=bool(getattr(server, "join_requires_approval", False)),
+        blacklist_auto_reject_count=_normalize_blacklist_auto_reject_count(getattr(server, "blacklist_auto_reject_count", 0)),
+        character_name_regex=_normalize_character_name_regex(getattr(server, "character_name_regex", DEFAULT_CHARACTER_NAME_REGEX)),
+        character_name_max_length=_normalize_character_name_max_length(getattr(server, "character_name_max_length", DEFAULT_CHARACTER_NAME_MAX_LENGTH)),
+        server_code=(server.server_code or ""),
+    )
+
+
+@router.get("/{server_id}/panel-features/join-requests", response_model=List[JoinRequestOut],
+            summary="面板功能：列出待审批申请")
+def list_panel_join_requests(
+    server_id: int,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    _require_panel_features_manage(server_id, user_id, db)
+    valid_status = {"pending", "approved", "rejected", "withdrawn"}
+    if status and status not in valid_status:
+        raise HTTPException(400, "状态无效")
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        sql = """
+            SELECT
+                r.id, r.server_id, r.applicant_user_id, au.email AS applicant_email,
+                r.message, r.status, r.reviewed_by_user_id,
+                ru.email AS reviewed_by_email,
+                r.review_note, r.created_at, r.updated_at, r.withdrawn_at
+            FROM (
+                SELECT *, from_user_id AS applicant_user_id
+                FROM server_member_requests
+                WHERE request_type='join'
+            ) r
+            JOIN users au ON au.id = r.applicant_user_id
+            LEFT JOIN users ru ON ru.id = r.reviewed_by_user_id
+            WHERE r.server_id=?
+        """
+        params = [server_id]
+        if status:
+            sql += " AND r.status=?"
+            params.append(status)
+        sql += " ORDER BY r.created_at DESC, r.id DESC"
+        rows = conn.execute(sql, tuple(params)).fetchall()
+
+    return _join_request_rows_with_blacklist(rows, server_id)
+
+
+@router.post("/{server_id}/panel-features/join-requests/{request_id}/approve", summary="面板功能：批准申请")
+def approve_panel_join_request(
+    server_id: int,
+    request_id: int,
+    req: PanelMembershipReviewReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    _require_panel_features_manage(server_id, user_id, db)
+    return approve_join_request(server_id, request_id, JoinRequestReviewReq(note=req.note), db, user_id)
+
+
+@router.post("/{server_id}/panel-features/join-requests/{request_id}/reject", summary="面板功能：拒绝申请")
+def reject_panel_join_request(
+    server_id: int,
+    request_id: int,
+    req: PanelMembershipReviewReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    _require_panel_features_manage(server_id, user_id, db)
+    return reject_join_request(server_id, request_id, JoinRequestReviewReq(note=req.note), db, user_id)
+
+
+@router.post("/{server_id}/panel-features/invites", summary="面板功能：发送邀请")
+def create_panel_invite(
+    server_id: int,
+    req: PanelMembershipInviteReq,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(_get_user_id),
+):
+    _require_panel_features_manage(server_id, user_id, db)
+    return create_server_invite(
+        server_id,
+        ServerInviteCreateReq(
+            invitee_email=req.invitee_email,
+            message=req.message,
+            expires_in_hours=req.expires_in_hours,
+        ),
+        db,
+        user_id,
     )
 
 
@@ -1193,8 +2479,8 @@ def list_panel_groups(
         groups = conn.execute(
             """
             SELECT g.id, g.name, g.description, g.parent_group_id, p.name, g.is_builtin
-            FROM server_panel_groups g
-            LEFT JOIN server_panel_groups p ON p.id = g.parent_group_id
+            FROM server_roles g
+            LEFT JOIN server_roles p ON p.id = g.parent_group_id
             WHERE g.server_id=?
             ORDER BY g.id
             """,
@@ -1205,12 +2491,12 @@ def list_panel_groups(
         needs_init = not {'服主', '管理', '成员'}.issubset(existing_names) \
                      or any(n in existing_names for n in ('owner', 'admin', 'default'))
         if needs_init:
-            _init_server_panel_groups(server_id)
+            _init_server_roles(server_id)
             groups = conn.execute(
                 """
                 SELECT g.id, g.name, g.description, g.parent_group_id, p.name, g.is_builtin
-                FROM server_panel_groups g
-                LEFT JOIN server_panel_groups p ON p.id = g.parent_group_id
+                FROM server_roles g
+                LEFT JOIN server_roles p ON p.id = g.parent_group_id
                 WHERE g.server_id=?
                 ORDER BY g.id
                 """,
@@ -1219,12 +2505,12 @@ def list_panel_groups(
         result = []
         for gid, name, desc, parent_group_id, parent_group_name, is_builtin in groups:
             direct_perms = conn.execute(
-                "SELECT permission FROM server_panel_group_perms WHERE group_id=? ORDER BY permission",
+                "SELECT permission FROM server_role_permissions WHERE group_id=? ORDER BY permission",
                 (gid,),
             ).fetchall()
-            effective_perms = _collect_panel_group_permissions(conn, server_id, gid)
+            effective_perms = _collect_panel_role_permissions(conn, server_id, gid)
             member_count = conn.execute(
-                "SELECT COUNT(*) FROM server_member_panel_groups WHERE group_id=?",
+                "SELECT COUNT(*) FROM server_member_roles WHERE group_id=?",
                 (gid,),
             ).fetchone()[0]
             result.append({
@@ -1259,20 +2545,20 @@ def create_panel_group(
         try:
             if req.parent_group_id is not None:
                 parent = conn.execute(
-                    "SELECT id FROM server_panel_groups WHERE id=? AND server_id=?",
+                    "SELECT id FROM server_roles WHERE id=? AND server_id=?",
                     (req.parent_group_id, server_id),
                 ).fetchone()
                 if not parent:
                     raise HTTPException(400, "父组不存在")
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO server_panel_groups(server_id, name, description, parent_group_id, is_builtin) VALUES(?,?,?,?,0)",
+                "INSERT INTO server_roles(server_id, name, description, parent_group_id, is_builtin) VALUES(?,?,?,?,0)",
                 (server_id, req.name.strip(), req.description, req.parent_group_id),
             )
             gid = cursor.lastrowid
             for perm in req.permissions:
                 cursor.execute(
-                    "INSERT OR IGNORE INTO server_panel_group_perms(group_id, permission) VALUES(?,?)",
+                    "INSERT OR IGNORE INTO server_role_permissions(group_id, permission) VALUES(?,?)",
                     (gid, perm.strip()),
                 )
             conn.commit()
@@ -1297,7 +2583,7 @@ def update_panel_group(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT id, is_builtin FROM server_panel_groups WHERE id=? AND server_id=?",
+            "SELECT id, is_builtin FROM server_roles WHERE id=? AND server_id=?",
             (group_id, server_id),
         ).fetchone()
         if not row:
@@ -1309,7 +2595,7 @@ def update_panel_group(
                 raise HTTPException(400, "内置权限组不可修改名称")
             try:
                 conn.execute(
-                    "UPDATE server_panel_groups SET name=? WHERE id=?",
+                    "UPDATE server_roles SET name=? WHERE id=?",
                     (req.name.strip(), group_id),
                 )
             except sqlite3.IntegrityError:
@@ -1317,7 +2603,7 @@ def update_panel_group(
 
         if req.description is not None:
             conn.execute(
-                "UPDATE server_panel_groups SET description=? WHERE id=?",
+                "UPDATE server_roles SET description=? WHERE id=?",
                 (req.description, group_id),
             )
 
@@ -1325,14 +2611,14 @@ def update_panel_group(
         if parent_specified:
             if req.parent_group_id is None:
                 conn.execute(
-                    "UPDATE server_panel_groups SET parent_group_id=NULL WHERE id=?",
+                    "UPDATE server_roles SET parent_group_id=NULL WHERE id=?",
                     (group_id,),
                 )
             else:
                 if req.parent_group_id == group_id:
                     raise HTTPException(400, "父组不能是自己")
                 parent = conn.execute(
-                    "SELECT id FROM server_panel_groups WHERE id=? AND server_id=?",
+                    "SELECT id FROM server_roles WHERE id=? AND server_id=?",
                     (req.parent_group_id, server_id),
                 ).fetchone()
                 if not parent:
@@ -1340,15 +2626,15 @@ def update_panel_group(
                 if _has_parent_cycle(conn, server_id, group_id, req.parent_group_id):
                     raise HTTPException(400, "父组继承形成循环，请重新选择")
                 conn.execute(
-                    "UPDATE server_panel_groups SET parent_group_id=? WHERE id=?",
+                    "UPDATE server_roles SET parent_group_id=? WHERE id=?",
                     (req.parent_group_id, group_id),
                 )
 
         if req.permissions is not None:
-            conn.execute("DELETE FROM server_panel_group_perms WHERE group_id=?", (group_id,))
+            conn.execute("DELETE FROM server_role_permissions WHERE group_id=?", (group_id,))
             for perm in req.permissions:
                 conn.execute(
-                    "INSERT OR IGNORE INTO server_panel_group_perms(group_id, permission) VALUES(?,?)",
+                    "INSERT OR IGNORE INTO server_role_permissions(group_id, permission) VALUES(?,?)",
                     (group_id, perm.strip()),
                 )
 
@@ -1371,7 +2657,7 @@ def delete_panel_group(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT is_builtin FROM server_panel_groups WHERE id=? AND server_id=?",
+            "SELECT is_builtin FROM server_roles WHERE id=? AND server_id=?",
             (group_id, server_id),
         ).fetchone()
         if not row:
@@ -1379,7 +2665,7 @@ def delete_panel_group(
         if row[0]:
             raise HTTPException(400, "内置权限组不可删除")
 
-        conn.execute("DELETE FROM server_panel_groups WHERE id=?", (group_id,))
+        conn.execute("DELETE FROM server_roles WHERE id=?", (group_id,))
         conn.commit()
     return {"ok": True}
 
@@ -1402,7 +2688,7 @@ def assign_member_panel_group(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         group = conn.execute(
-            "SELECT id FROM server_panel_groups WHERE id=? AND server_id=?",
+            "SELECT id FROM server_roles WHERE id=? AND server_id=?",
             (req.group_id, server_id),
         ).fetchone()
         if not group:
@@ -1410,11 +2696,11 @@ def assign_member_panel_group(
 
         # 查出组名，用来同步底层 role
         group_name = conn.execute(
-            "SELECT name FROM server_panel_groups WHERE id=?", (req.group_id,)
+            "SELECT name FROM server_roles WHERE id=?", (req.group_id,)
         ).fetchone()[0]
 
         conn.execute(
-            "INSERT OR REPLACE INTO server_member_panel_groups(server_id, user_id, group_id) VALUES(?,?,?)",
+            "INSERT OR REPLACE INTO server_member_roles(server_id, user_id, group_id) VALUES(?,?,?)",
             (server_id, target_user_id, req.group_id),
         )
         conn.commit()
@@ -1452,8 +2738,8 @@ def get_member_panel_group(
         row = conn.execute(
             """
             SELECT spg.id, spg.name, spg.description, spg.is_builtin
-            FROM server_member_panel_groups smpg
-            JOIN server_panel_groups spg ON spg.id = smpg.group_id
+            FROM server_member_roles smpg
+            JOIN server_roles spg ON spg.id = smpg.group_id
             WHERE smpg.server_id=? AND smpg.user_id=?
             """,
             (server_id, target_user_id),

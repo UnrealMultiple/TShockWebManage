@@ -1,13 +1,14 @@
 <template>
   <div class="um-page">
     <!-- 页头 -->
-    <div class="page-header">
-      <h1 class="page-title">用户管理</h1>
+    <PageHeader title="用户管理" heading-tag="h1">
+      <template #actions>
       <button class="btn btn-sm btn-outline" @click="loadData" :disabled="loading">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;flex-shrink:0"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.18"/></svg>
         {{ loading ? '加载中…' : '刷新' }}
       </button>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="um-body">
 
@@ -78,7 +79,44 @@
         </div>
       </div>
 
-      <!-- ② 当前在线玩家 -->
+      <!-- ② 本服务器黑名单 -->
+      <div class="section-card">
+        <div class="section-header-row">
+          <div class="section-card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;vertical-align:middle;margin-right:8px">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>
+              <line x1="8" y1="8" x2="16" y2="16"/>
+              <line x1="16" y1="8" x2="8" y2="16"/>
+            </svg>
+            本服务器黑名单
+            <span v-if="serverBlacklist.length" class="count-badge count-badge-muted">{{ serverBlacklist.length }}</span>
+          </div>
+          <div class="blacklist-tools">
+            <input
+              v-model.trim="blacklistSearch"
+              class="blacklist-search"
+              placeholder="搜索账号、原因或创建人"
+              @keyup.enter="loadServerBlacklist"
+            />
+            <button class="btn btn-sm btn-outline" @click="loadServerBlacklist" :disabled="blacklistLoading">搜索</button>
+            <button v-if="blacklistSearch" class="btn btn-sm btn-outline" @click="resetBlacklistSearch">重置</button>
+          </div>
+        </div>
+        <div v-if="blacklistLoading" class="loading-state">加载黑名单…</div>
+        <div v-else-if="!serverBlacklist.length" class="empty-row-inline">暂无本服务器黑名单记录</div>
+        <div v-else class="blacklist-list">
+          <div v-for="entry in serverBlacklist" :key="entry.id" class="blacklist-row">
+            <div class="blacklist-main">
+              <strong>{{ entry.target_email }}</strong>
+              <span class="muted-text">加入于 {{ formatTime(entry.created_at) }}</span>
+              <div v-if="entry.reason" class="blacklist-reason">{{ entry.reason }}</div>
+            </div>
+            <button class="btn btn-xs btn-outline-danger" :disabled="blacklistLoading" @click="removeBlacklistEntry(entry)">删除</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ③ 当前在线玩家 -->
       <div class="section-card">
         <div class="section-header-row">
           <div class="section-card-title">
@@ -94,7 +132,7 @@
             {{ onlineFetch.loading.value ? '查询中…' : '刷新' }}
           </button>
         </div>
-        <div v-if="!agentOnline" class="agent-offline-tip">Agent 未连接，无法查询在线玩家</div>
+        <AgentOfflineNotice v-if="!agentOnline" compact message="Agent 未连接，无法查询在线玩家。" />
         <div v-else-if="onlineFetch.loading.value" class="loading-state">查询在线玩家…</div>
         <div v-else-if="!onlinePlayers.length" class="empty-row-inline">当前没有玩家在线</div>
         <div v-else class="player-pill-cloud">
@@ -109,7 +147,7 @@
         </div>
       </div>
 
-      <!-- ③ 游戏内未绑定账号 -->
+      <!-- ④ 游戏内未绑定账号 -->
       <div class="section-card">
         <div class="section-header-row">
           <div class="section-card-title">
@@ -127,7 +165,7 @@
             {{ allGameFetch.loading.value ? '查询中…' : '刷新' }}
           </button>
         </div>
-        <div v-if="!agentOnline" class="agent-offline-tip">Agent 未连接，无法查询游戏账号</div>
+        <AgentOfflineNotice v-if="!agentOnline" compact message="Agent 未连接，无法查询游戏账号。" />
         <div v-else-if="allGameFetch.loading.value" class="loading-state">查询中…</div>
         <template v-else>
           <div v-if="!pagedUnbound.length" class="empty-row-inline">暂无未绑定的游戏账号</div>
@@ -187,9 +225,13 @@
                     已保存
                   </span>
                   <button
+                    v-if="drawerMember?.user_id !== serverOwnerId && canManage"
+                    class="btn btn-xs btn-warn"
+                    @click="openBlacklistModal(drawerMember)"
+                  >加入黑名单</button>
+                  <button
                     v-if="drawerMember?.user_id !== serverOwnerId && isOwner"
                     class="btn btn-xs btn-danger kick-btn"
-                    style="margin-left:auto"
                     @click="handleKickMember"
                   >踢出</button>
                 </div>
@@ -292,22 +334,75 @@
       @save="handleSaveInventory"
     />
 
+    <div v-if="blacklistModalOpen" class="um-modal-overlay" @click.self="closeBlacklistModal">
+      <div class="um-modal">
+        <div class="um-modal-head">
+          <h3>加入黑名单</h3>
+          <button class="drawer-close" @click="closeBlacklistModal">×</button>
+        </div>
+        <div class="um-modal-body">
+          <div class="blacklist-target">{{ blacklistTarget?.email }}</div>
+          <div class="blacklist-choice-row">
+            <label class="blacklist-choice">
+              <input v-model="blacklistDraft.scope" type="radio" value="cloud" />
+              <span>
+                <strong>平台云黑</strong>
+                <small>提交给平台审核，通过后作为全平台黑名单信息</small>
+              </span>
+            </label>
+            <label class="blacklist-choice">
+              <input v-model="blacklistDraft.scope" type="radio" value="server" />
+              <span>
+                <strong>本服务器黑名单</strong>
+                <small>立即加入本服务器独立黑名单</small>
+              </span>
+            </label>
+          </div>
+          <textarea
+            v-model.trim="blacklistDraft.reason"
+            class="blacklist-textarea"
+            rows="4"
+            :placeholder="blacklistDraft.scope === 'cloud' ? '填写平台云黑原因' : '填写本服务器黑名单原因（可选）'"
+          ></textarea>
+        </div>
+        <div class="um-modal-foot">
+          <button class="btn btn-outline" :disabled="blacklistSubmitting" @click="closeBlacklistModal">取消</button>
+          <button class="btn btn-primary" :disabled="blacklistSubmitting" @click="submitBlacklist">
+            {{ blacklistSubmitting ? '提交中…' : '确认加入' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
 <script setup>
 import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import { getToken } from '@/api/auth'
-import { kickMember, assignCharacterOwner, deleteGameAccount, deleteMemberCharacter } from '@/api/servers'
+import {
+  kickMember,
+  assignCharacterOwner,
+  deleteGameAccount,
+  deleteMemberCharacter,
+  listServerBlacklist,
+  addServerBlacklist,
+  removeServerBlacklist,
+  submitCloudBlacklist,
+} from '@/api/servers'
 import { apiUrl } from '@/api/base'
 import { usePlayerList } from '@/composables/usePlayerList'
+import { useFeedback } from '@/composables/useFeedback'
 import InventoryModal from '@/components/InventoryModal.vue'
 import PlayerActionPanel from '@/components/PlayerActionPanel.vue'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 // ── 注入全局状态 ──────────────────────────────────────────────────
 const myServers   = inject('myServers', ref([]))
 const activeKey   = inject('activeServerKey', ref(''))
 const activeServer = inject('activeServer', ref(null))
+const { toast, dialog } = useFeedback()
 
 const props = defineProps({
   wsState:     { type: String, default: 'disconnected' },
@@ -397,6 +492,9 @@ async function loadCharMap() {
 // ── 成员列表 ──────────────────────────────────────────────────────
 const members = ref([])
 const loading = ref(false)
+const serverBlacklist = ref([])
+const blacklistLoading = ref(false)
+const blacklistSearch = ref('')
 
 async function loadData() {
   if (!activeKey.value || !canManage.value) return
@@ -413,19 +511,95 @@ async function loadData() {
     members.value = data.members || []
     serverIdCache.value = data.id
     // 加载 charMap、权限组列表，并触发 Agent 查询
-    await Promise.all([loadCharMap(), loadPanelGroups()])
+    await Promise.all([loadCharMap(), loadPanelGroups(), loadServerBlacklist()])
     if (props.agentOnline) {
       onlineFetch.request(activeKey.value)
       allGameFetch.request(activeKey.value)
     }
   } catch (e) {
-    alert('加载成员失败: ' + e.message)
+    toast.error('加载成员失败: ' + e.message)
   } finally {
     loading.value = false
   }
 }
 
 const serverIdCache = ref(null)
+
+async function loadServerBlacklist() {
+  if (!serverIdCache.value) return
+  blacklistLoading.value = true
+  try {
+    serverBlacklist.value = await listServerBlacklist(serverIdCache.value, { q: blacklistSearch.value })
+  } catch (e) {
+    toast.error('加载本服务器黑名单失败: ' + e.message)
+  } finally {
+    blacklistLoading.value = false
+  }
+}
+
+function resetBlacklistSearch() {
+  blacklistSearch.value = ''
+  loadServerBlacklist()
+}
+
+const blacklistModalOpen = ref(false)
+const blacklistSubmitting = ref(false)
+const blacklistTarget = ref(null)
+const blacklistDraft = ref({ scope: 'server', reason: '' })
+
+function openBlacklistModal(member) {
+  blacklistTarget.value = member
+  blacklistDraft.value = { scope: 'server', reason: '' }
+  blacklistModalOpen.value = true
+}
+
+function closeBlacklistModal() {
+  blacklistModalOpen.value = false
+  blacklistTarget.value = null
+  blacklistDraft.value = { scope: 'server', reason: '' }
+}
+
+async function submitBlacklist() {
+  if (!serverIdCache.value || !blacklistTarget.value) return
+  const reason = String(blacklistDraft.value.reason || '').trim()
+  if (blacklistDraft.value.scope === 'cloud' && !reason) {
+    toast.warning('提交平台云黑必须填写原因')
+    return
+  }
+  blacklistSubmitting.value = true
+  try {
+    if (blacklistDraft.value.scope === 'cloud') {
+      await submitCloudBlacklist(serverIdCache.value, blacklistTarget.value.user_id, reason)
+      toast.success('平台云黑已提交，等待平台审核')
+    } else {
+      await addServerBlacklist(serverIdCache.value, blacklistTarget.value.user_id, reason)
+      toast.success('已加入本服务器黑名单')
+      await loadServerBlacklist()
+    }
+    closeBlacklistModal()
+  } catch (e) {
+    toast.error('加入黑名单失败: ' + e.message)
+  } finally {
+    blacklistSubmitting.value = false
+  }
+}
+
+async function removeBlacklistEntry(entry) {
+  if (!serverIdCache.value || !entry?.id) return
+  const ok = await dialog.confirm({
+    title: '删除黑名单记录',
+    message: `确定删除「${entry.target_email}」的本服务器黑名单记录吗？`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await removeServerBlacklist(serverIdCache.value, entry.id)
+    await loadServerBlacklist()
+  } catch (e) {
+    toast.error('删除黑名单失败: ' + e.message)
+  }
+}
 
 // ── 重新加载的 watch ─────────────────────────────────────────────
 watch([activeKey, canManage], () => { loadData() }, { immediate: true })
@@ -525,13 +699,19 @@ async function loadMemberPanelGroup() {
 
 async function handleKickMember() {
   if (!serverIdCache.value || !drawerMember.value) return
-  if (!confirm(`确定踢出「${drawerMember.value.email}」吗？`)) return
+  const ok = await dialog.confirm({
+    title: '踢出成员',
+    message: `确定踢出「${drawerMember.value.email}」吗？`,
+    confirmText: '踢出',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await kickMember(serverIdCache.value, drawerMember.value.user_id)
     closeDrawer()
     await loadData()
   } catch (e) {
-    alert('踢出失败: ' + e.message)
+    toast.error('踢出失败: ' + e.message)
   }
 }
 
@@ -558,7 +738,7 @@ async function updatePanelGroup() {
     clearTimeout(panelGroupSavedTimer)
     panelGroupSavedTimer = setTimeout(() => { panelGroupSaved.value = false }, 3000)
   } catch (e) {
-    alert('修改面板权限失败: ' + e.message)
+    toast.error('修改面板权限失败: ' + e.message)
     await loadMemberPanelGroup()
   } finally {
     panelGroupUpdating.value = false
@@ -996,7 +1176,8 @@ function onWsMessage(e) {
     if (p.ref_id !== pendingSaveInvReqId) return
     pendingSaveInvReqId = null
     invSaving.value = false
-    alert(p.success ? (p.msg || '保存成功') : ('保存失败: ' + (p.msg || '未知错误')))
+    if (p.success) toast.success(p.msg || '保存成功')
+    else toast.error('保存失败: ' + (p.msg || '未知错误'))
     return
   }
 
@@ -1039,25 +1220,6 @@ function formatTime(ts) {
   height: 100%;
   overflow: hidden;
   background: #f8fafc;
-}
-
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 28px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.page-title {
-  font-size: 1.35rem;
-  font-weight: 700;
-  margin: 0;
-  color: #0f172a;
 }
 
 .um-body { flex: 1; overflow-y: auto; padding: 24px 28px; box-sizing: border-box; }
@@ -1218,17 +1380,69 @@ function formatTime(ts) {
   margin-bottom: 8px;
 }
 
-.agent-offline-tip {
-  font-size: .84rem;
-  color: #94a3b8;
-  padding: 8px 0;
-}
-
 .empty-row-inline {
   font-size: .84rem;
   color: #94a3b8;
   padding: 12px 0;
   text-align: center;
+}
+
+.blacklist-list {
+  display: grid;
+  gap: 8px;
+}
+
+.blacklist-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.blacklist-search {
+  width: min(260px, 56vw);
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  color: #0f172a;
+  outline: none;
+}
+
+.blacklist-search:focus {
+  border-color: #6c63ff;
+  box-shadow: 0 0 0 3px rgba(108,99,255,.12);
+}
+
+.blacklist-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid #fee2e2;
+  border-radius: 10px;
+  background: #fffafa;
+}
+
+.blacklist-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.blacklist-main strong,
+.blacklist-target {
+  word-break: break-all;
+  color: #0f172a;
+}
+
+.blacklist-reason {
+  color: #7f1d1d;
+  font-size: .8rem;
+  line-height: 1.45;
+  word-break: break-word;
 }
 
 /* ── 在线玩家列表 ───────────────────────────────────────── */
@@ -1387,6 +1601,97 @@ function formatTime(ts) {
 .drawer-danger-zone .drawer-divider {
   background: #fecaca;
   margin-bottom: 12px;
+}
+
+.um-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, .48);
+}
+
+.um-modal {
+  width: min(520px, 96vw);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, .22);
+  overflow: hidden;
+}
+
+.um-modal-head,
+.um-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.um-modal-head h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.um-modal-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.um-modal-foot {
+  justify-content: flex-end;
+  border-top: 1px solid #f1f5f9;
+  border-bottom: none;
+}
+
+.blacklist-choice-row {
+  display: grid;
+  gap: 8px;
+}
+
+.blacklist-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  cursor: pointer;
+}
+
+.blacklist-choice span {
+  display: grid;
+  gap: 3px;
+}
+
+.blacklist-choice small {
+  color: #64748b;
+  font-size: .78rem;
+}
+
+.blacklist-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 92px;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  color: #0f172a;
+  outline: none;
+}
+
+.blacklist-textarea:focus {
+  border-color: #6c63ff;
+  box-shadow: 0 0 0 3px rgba(108,99,255,.12);
 }
 
 /* ── 游戏角色区 ──────────────────────────────────────── */

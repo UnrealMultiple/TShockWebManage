@@ -7,17 +7,17 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </div>
         <h1>重置密码</h1>
-        <p class="subtitle">{{ step === 1 ? '输入注册邮箱以接收验证码' : '验证身份并设置新密码' }}</p>
+        <p class="subtitle">{{ step === 1 ? '输入 QQ 号以接收验证码' : '验证身份并设置新密码' }}</p>
       </div>
 
       <!-- 第一步：输入邮箱 -->
       <form v-if="step === 1" @submit.prevent="handleSendCode">
         <div class="field">
-          <label>注册邮箱</label>
+          <label>QQ 号 / QQ 邮箱</label>
           <input
             v-model="form.email"
-            type="email"
-            placeholder="example@qq.com"
+            type="text"
+            placeholder="123456789 或 123456789@qq.com"
             autocomplete="username"
             :disabled="loading"
           />
@@ -102,6 +102,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { resetSendCode, resetConfirm } from '@/api/auth'
+import { normalizeQqEmailInput, qqEmailInputError } from '@/utils/qqEmail'
 
 const router  = useRouter()
 const step    = ref(1)
@@ -125,11 +126,13 @@ function startCountdown() {
 async function handleSendCode() {
   error.value = ''
   success.value = ''
-  if (!form.value.email) { error.value = '请输入邮箱'; return }
+  const email = normalizeQqEmailInput(form.value.email)
+  if (!email) { error.value = qqEmailInputError(); return }
 
   loading.value = true
   try {
-    await resetSendCode(form.value.email)
+    form.value.email = email
+    await resetSendCode(email)
     success.value = '验证码已发送，请查收邮件'
     startCountdown()
     step.value = 2
@@ -143,12 +146,14 @@ async function handleSendCode() {
 async function handleReset() {
   error.value = ''
   if (form.value.code.length !== 6) { error.value = '请输入 6 位验证码'; return }
+  const email = normalizeQqEmailInput(form.value.email)
+  if (!email) { error.value = qqEmailInputError(); return }
   if (form.value.password.length < 8) { error.value = '新密码至少需要 8 位'; return }
   if (form.value.password !== form.value.confirm) { error.value = '两次输入的密码不一致'; return }
 
   loading.value = true
   try {
-    await resetConfirm(form.value.email, form.value.code, form.value.password)
+    await resetConfirm(email, form.value.code, form.value.password)
     success.value = '密码重置成功，即将跳转登录…'
     setTimeout(() => router.push('/login'), 1500)
   } catch (e) {

@@ -1,9 +1,8 @@
 <template>
   <div class="files-view">
     <!-- 头部 -->
-    <div class="files-header">
-      <div class="fh-left">
-        <h2 class="fh-title">文件概览</h2>
+    <PageHeader title="文件概览" class="files-header">
+      <template #meta>
         <span class="fh-server" v-if="activeServer">{{ activeServer.name }}</span>
         <span class="fh-dir" v-if="serverDir" :title="serverDir">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -11,7 +10,8 @@
           </svg>
           {{ serverDir }}
         </span>
-      </div>
+      </template>
+      <template #actions>
       <button class="refresh-btn" @click="requestFileList" :disabled="loading || !agentOnline || !activeServerKey">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ spinning: loading }">
           <polyline points="1 4 1 10 7 10"/>
@@ -19,17 +19,11 @@
         </svg>
         {{ loading ? '加载中…' : '刷新' }}
       </button>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Agent 未连接提示 -->
-    <div v-if="!agentOnline" class="offline-notice">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/>
-        <line x1="12" y1="8" x2="12" y2="12"/>
-        <line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      <span>Agent 未连接，无法获取文件列表。请先确保服务器已启动。</span>
-    </div>
+    <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法获取文件列表。请先启动服务器。" />
 
     <template v-else>
       <!-- 加载中 -->
@@ -509,6 +503,9 @@
 
 <script setup>
 import { ref, computed, inject, onMounted, onUnmounted, nextTick } from 'vue'
+import { useFeedback } from '@/composables/useFeedback'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 const props = defineProps({
   wsState:     { type: String, default: 'disconnected' },
@@ -517,6 +514,7 @@ const props = defineProps({
 
 const activeServer    = inject('activeServer',    ref(null))
 const activeServerKey = inject('activeServerKey', ref(''))
+const { toast, dialog } = useFeedback()
 
 const loading         = ref(false)
 const treeData        = ref(null)
@@ -587,7 +585,7 @@ function confirmPathDialog() {
   const text = (pathDialogInput.value || '').trim()
   if (!text) return
   const baseDir = getSafeBaseDir()
-  if (!baseDir) { alert('请先点击刷新，获取服务器目录后再操作'); return }
+  if (!baseDir) { toast.warning('请先点击刷新，获取服务器目录后再操作'); return }
   const srcPath = f.full_path || f.name
   const dstPath = `${baseDir.replace(/[\\/]+$/, '')}\\${text}`
   const type = pathDialogMode.value === 'copy' ? 'file_copy' : 'file_move'
@@ -777,8 +775,14 @@ function saveEditCell() {
   })
 }
 
-function deleteRow(rowIdx, rowid) {
-  if (!confirm('确认删除此行？')) return
+async function deleteRow(rowIdx, rowid) {
+  const ok = await dialog.confirm({
+    title: '删除数据行',
+    message: '确认删除此行？',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   dbTableRows.value.splice(rowIdx, 1)
   window.__tshockSend?.({
     type: 'db_delete_row', msg_id: 'dbdel-' + Date.now(), timestamp: Date.now(),
@@ -1120,7 +1124,7 @@ function onWsMessage(e) {
       requestFileList()
       selectedPaths.value = []
     } else {
-      alert(p.msg || '操作失败')
+      toast.error(p.msg || '操作失败')
     }
     return
   }
@@ -1159,17 +1163,7 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
-/* ── 头部 ── */
-.files-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 24px;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.fh-left  { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.fh-title { margin: 0; font-size: 20px; font-weight: 700; color: #0f172a; }
+.files-header { margin: -28px -32px 24px; }
 .fh-server {
   font-size: 12px; color: #64748b;
   background: #f1f5f9; border: 1px solid #e2e8f0;
@@ -1198,15 +1192,6 @@ onUnmounted(() => {
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-
-/* ── 离线提示 ── */
-.offline-notice {
-  display: flex; align-items: center; gap: 12px;
-  padding: 20px 24px;
-  background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px;
-  color: #92400e; font-size: 14px;
-}
-.offline-notice svg { width: 20px; height: 20px; flex-shrink: 0; color: #f59e0b; }
 
 /* ── Section 容器 ── */
 .section {

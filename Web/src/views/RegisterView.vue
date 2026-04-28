@@ -11,15 +11,15 @@
       <!-- 第一步：填写信息 + 发送验证码 -->
       <form v-if="step === 1" @submit.prevent="handleSendCode">
         <div class="field">
-          <label>QQ 邮箱</label>
+          <label>QQ 号 / QQ 邮箱</label>
           <input
             v-model="form.email"
-            type="email"
-            placeholder="example@qq.com"
+            type="text"
+            placeholder="123456789 或 123456789@qq.com"
             autocomplete="username"
             :disabled="loading"
           />
-          <span class="field-hint">仅支持 @qq.com</span>
+          <span class="field-hint">可直接填写 QQ 号</span>
         </div>
 
         <div class="field">
@@ -97,9 +97,10 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { sendCode, register, saveAuth } from '@/api/auth'
+import { sendCode, register, saveAuth, getBootstrapStatus } from '@/api/auth'
+import { normalizeQqEmailInput, qqEmailInputError } from '@/utils/qqEmail'
 
 const router  = useRouter()
 const step    = ref(1)
@@ -127,13 +128,22 @@ function startCountdown() {
   }, 1000)
 }
 
+async function checkBootstrapRequired() {
+  try {
+    const status = await getBootstrapStatus()
+    if (status.bootstrap_required) router.replace('/bootstrap-platform-admin')
+  } catch {
+    // 忽略，允许用户继续在注册页操作
+  }
+}
+
 async function handleSendCode() {
   error.value = ''
   success.value = ''
 
-  const qqRe = /^[a-zA-Z0-9._%+\-]+@qq\.com$/i
-  if (!qqRe.test(form.value.email)) {
-    error.value = '仅支持 @qq.com 邮箱'
+  const email = normalizeQqEmailInput(form.value.email)
+  if (!email) {
+    error.value = qqEmailInputError()
     return
   }
   if (form.value.password.length < 8) {
@@ -147,7 +157,8 @@ async function handleSendCode() {
 
   loading.value = true
   try {
-    await sendCode(form.value.email, form.value.password)
+    form.value.email = email
+    await sendCode(email, form.value.password)
     success.value = '验证码已发送，请查收邮件'
     startCountdown()
     step.value = 2
@@ -166,15 +177,23 @@ async function handleRegister() {
   }
   loading.value = true
   try {
-    const res = await register(form.value.email, form.value.password, form.value.code)
+    const email = normalizeQqEmailInput(form.value.email)
+    if (!email) {
+      error.value = qqEmailInputError()
+      return
+    }
+    const res = await register(email, form.value.password, form.value.code)
     saveAuth(res.token, res.email)
-    router.push('/home')
+    const bootstrap = await getBootstrapStatus()
+    router.push(bootstrap.bootstrap_required ? '/bootstrap-platform-admin' : '/home')
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
   }
 }
+
+onMounted(checkBootstrapRequired)
 </script>
 
 <style scoped>

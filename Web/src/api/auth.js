@@ -33,7 +33,47 @@ async function post(path, body) {
     body: JSON.stringify(body)
   })
   const data = await res.json()
-  if (!res.ok) throw new Error(data.detail || '请求失败')
+  if (!res.ok) {
+    const err = new Error(data.detail || '请求失败')
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${getToken()}`,
+  }
+}
+
+async function get(path, withAuth = false) {
+  const res = await fetch(apiUrl(path), {
+    method: 'GET',
+    headers: withAuth ? authHeaders() : undefined,
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    const err = new Error(data.detail || '请求失败')
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
+async function postAuth(path, body) {
+  const res = await fetch(apiUrl(path), {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    const err = new Error(data.detail || '请求失败')
+    err.status = res.status
+    throw err
+  }
   return data
 }
 
@@ -65,6 +105,26 @@ export function register(email, password, code) {
  */
 export function login(email, password) {
   return post('/api/auth/login', { email, password })
+}
+
+export function getBootstrapStatus() {
+  return get('/api/auth/bootstrap-status')
+}
+
+export function bootstrapPlatformAdmin(bootstrap_token) {
+  return postAuth('/api/auth/bootstrap-platform-admin', { bootstrap_token })
+}
+
+export function bootstrapSendCode(email, password, bootstrap_token) {
+  return post(`/api/auth/bootstrap-send-code?bootstrap_token=${encodeURIComponent(bootstrap_token)}`, { email, password })
+}
+
+export function bootstrapRegister(email, password, code, bootstrap_token) {
+  return post(`/api/auth/bootstrap-register?bootstrap_token=${encodeURIComponent(bootstrap_token)}`, { email, password, code })
+}
+
+export function getCurrentUser() {
+  return get('/api/auth/me', true)
 }
 
 /**

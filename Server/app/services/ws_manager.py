@@ -9,6 +9,7 @@ class ConnectionManager:
         self.active_agents: Dict[str, WebSocket] = {}
         self.active_webs: Dict[str, WebSocket] = {}
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.pending_agent_responses: Dict[str, asyncio.Future] = {}
 
     def make_envelope(self, msg_type: str, payload: dict, msg_id: Optional[str] = None) -> str:
         return json.dumps({
@@ -42,5 +43,37 @@ class ConnectionManager:
                 dead.append(cid)
         for cid in dead:
             self.active_agents.pop(cid, None)
+
+    async def request_agent(
+        self,
+        agent_id: str,
+        msg_type: str,
+        payload: dict,
+        timeout: float = 8.0,
+    ) -> dict:
+        if not agent_id or agent_id not in self.active_agents:
+            raise TimeoutError("Agent 当前离线")
+
+        loop = asyncio.get_running_loop()
+        msg_id = new_id()
+        fut = loop.create_future()
+        self.pending_agent_responses[msg_id] = fut
+        try:
+            await self.send_agent(agent_id, self.make_envelope(msg_type, payload, msg_id=msg_id))
+            packet = await asyncio.wait_for(fut, timeout=timeout)
+            return packet
+        finally:
+            self.pending_agent_responses.pop(msg_id, None)
+
+    def resolve_agent_response(self, packet: dict) -> bool:
+        payload = packet.get("payload") if isinstance(packet, dict) else None
+        ref_id = payload.get("ref_id") if isinstance(payload, dict) else None
+        if not ref_id:
+            return False
+        fut = self.pending_agent_responses.get(str(ref_id))
+        if not fut or fut.done():
+            return False
+        fut.set_result(packet)
+        return True
 
 manager = ConnectionManager()

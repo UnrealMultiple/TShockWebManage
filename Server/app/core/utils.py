@@ -47,7 +47,7 @@ def get_user_permissions(email: str) -> Set[str]:
         
         # 递归检查组权限 (支持 RBAC 继承)
         groups_to_check = []
-        rows = conn.execute("SELECT group_id FROM user_groups WHERE user_id=?", (user_id,)).fetchall()
+        rows = conn.execute("SELECT group_id FROM account_role_members WHERE user_id=?", (user_id,)).fetchall()
         for r in rows:
             groups_to_check.append(r[0])
             
@@ -59,12 +59,12 @@ def get_user_permissions(email: str) -> Set[str]:
             checked_groups.add(gid)
             
             # 获取当前组权限
-            perms = conn.execute("SELECT permission FROM group_permissions WHERE group_id=?", (gid,)).fetchall()
+            perms = conn.execute("SELECT permission FROM account_role_permissions WHERE group_id=?", (gid,)).fetchall()
             for p in perms:
                 permissions.add(p[0])
             
             # 获取父组并加入待检查列表
-            parent = conn.execute("SELECT parent_id FROM groups WHERE id=?", (gid,)).fetchone()
+            parent = conn.execute("SELECT parent_id FROM account_roles WHERE id=?", (gid,)).fetchone()
             if parent and parent[0]:
                 groups_to_check.append(parent[0])
     

@@ -4,7 +4,7 @@
       <div>
         <h1>欢迎来到 TShock 平台主页</h1>
         <p>
-          这里支持普通玩家、服主和受授权的平台管理员协作使用。
+          这里支持普通玩家和服主协作使用。
           先根据你的目标选择入口，再进入具体功能页面。
         </p>
       </div>
@@ -37,6 +37,7 @@
           <a href="https://github.com/UnrealMultiple/TShockWebManage/releases" class="role-link ghost" target="_blank" rel="noopener">Agent插件下载</a>
         </div>
       </article>
+
     </section>
   </div>
 </template>
@@ -92,7 +93,7 @@
 
 .role-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 18px;
 }
@@ -127,6 +128,9 @@
 }
 .owner {
   box-shadow: inset 0 0 0 1px #bbf7d0;
+}
+.platform {
+  box-shadow: inset 0 0 0 1px #fde68a;
 }
 
 .role-link {

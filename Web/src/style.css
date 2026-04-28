@@ -1,11 +1,95 @@
 /* 全局样式 */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+html,
+body,
+#app {
+  height: 100%;
+}
+
 body {
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   background: #f1f5f9;
   color: #0f172a;
   min-height: 100vh;
+}
+
+#app {
+  min-width: 0;
+  min-height: 0;
+}
+
+.body-area,
+.main-content,
+:where(
+  .auth-page,
+  .home-page,
+  .servers-page,
+  .messages-page,
+  .pa-page,
+  .cfg-page,
+  .ss-page,
+  .plg-page,
+  .um-page,
+  .mc-page,
+  .pg-page,
+  .gg-page,
+  .bl-page,
+  .bans-page,
+  .files-view,
+  .db-root,
+  .console-layout,
+  .placeholder-page
+) {
+  min-width: 0;
+  min-height: 0;
+}
+
+:where(
+  .home-page,
+  .servers-page,
+  .messages-page,
+  .pa-page,
+  .cfg-page,
+  .ss-page,
+  .plg-page,
+  .um-page,
+  .mc-page,
+  .pg-page,
+  .gg-page,
+  .bl-page,
+  .bans-page,
+  .files-view,
+  .db-root,
+  .console-layout,
+  .placeholder-page
+) {
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto !important;
+  scrollbar-gutter: stable;
+}
+
+:where(
+  .page-body,
+  .pa-body,
+  .cfg-editor,
+  .cfg-fields-panel,
+  .ss-content,
+  .plg-panel,
+  .um-body,
+  .mc-body,
+  .pg-body,
+  .gg-body,
+  .bl-body,
+  .bans-body,
+  .db-body,
+  .db-main,
+  .files-main,
+  .file-panel,
+  .console-main
+) {
+  min-height: 0;
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }

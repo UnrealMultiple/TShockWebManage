@@ -23,11 +23,11 @@ async def check_admin_perm(authorization: str = Header(...)):
 @router.get("/groups")
 async def list_groups(_ = Depends(check_admin_perm)):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
-        groups = conn.execute("SELECT id, name, parent_id, description FROM groups").fetchall()
+        groups = conn.execute("SELECT id, name, parent_id, description FROM account_roles").fetchall()
         result = []
         for g in groups:
             gid, name, pid, desc = g
-            perms = conn.execute("SELECT permission FROM group_permissions WHERE group_id=?", (gid,)).fetchall()
+            perms = conn.execute("SELECT permission FROM account_role_permissions WHERE group_id=?", (gid,)).fetchall()
             result.append({
                 "id": gid,
                 "name": name,
@@ -42,12 +42,12 @@ async def create_group(req: GroupCreate, _ = Depends(check_admin_perm)):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         try:
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO groups(name, parent_id, description) VALUES(?,?,?)",
+            cursor.execute("INSERT INTO account_roles(name, parent_id, description) VALUES(?,?,?)",
                          (req.name, req.parent_id, req.description))
             gid = cursor.lastrowid
             # 插入权限
             for p in req.permissions:
-                cursor.execute("INSERT INTO group_permissions(group_id, permission) VALUES(?,?)", (gid, p))
+                cursor.execute("INSERT INTO account_role_permissions(group_id, permission) VALUES(?,?)", (gid, p))
             conn.commit()
             return {"ok": True, "id": gid}
         except sqlite3.IntegrityError:
@@ -57,20 +57,20 @@ async def create_group(req: GroupCreate, _ = Depends(check_admin_perm)):
 async def delete_group(group_id: int, _ = Depends(check_admin_perm)):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         # 不能删除核心角色 (模仿 TShock)
-        group = conn.execute("SELECT name FROM groups WHERE id=?", (group_id,)).fetchone()
+        group = conn.execute("SELECT name FROM account_roles WHERE id=?", (group_id,)).fetchone()
         if not group:
              raise HTTPException(404, "组不存在")
         if group[0] in ['superadmin', 'admin', 'default']:
              raise HTTPException(403, f"不能删除系统内置角色: {group[0]}")
         
-        conn.execute("DELETE FROM groups WHERE id=?", (group_id,))
+        conn.execute("DELETE FROM account_roles WHERE id=?", (group_id,))
         # 级联删除权限和用户关系已经在 DB 层级配置 ON DELETE CASCADE
         conn.commit()
     return {"ok": True}
 
 # 3. 用户-组管理
 @router.post("/users/{email}/groups")
-async def update_user_groups(email: str, req: UserGroupUpdate, _ = Depends(check_admin_perm)):
+async def update_account_role_members(email: str, req: UserGroupUpdate, _ = Depends(check_admin_perm)):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute("SELECT id FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone()
         if not row:
@@ -79,13 +79,13 @@ async def update_user_groups(email: str, req: UserGroupUpdate, _ = Depends(check
         
         cursor = conn.cursor()
         # 清除旧记录
-        cursor.execute("DELETE FROM user_groups WHERE user_id=?", (user_id,))
+        cursor.execute("DELETE FROM account_role_members WHERE user_id=?", (user_id,))
         
         # 添加新组
         for gname in req.groups:
-            grow = cursor.execute("SELECT id FROM groups WHERE name=?", (gname,)).fetchone()
+            grow = cursor.execute("SELECT id FROM account_roles WHERE name=?", (gname,)).fetchone()
             if grow:
-                cursor.execute("INSERT INTO user_groups(user_id, group_id) VALUES(?,?)", (user_id, grow[0]))
+                cursor.execute("INSERT INTO account_role_members(user_id, group_id) VALUES(?,?)", (user_id, grow[0]))
         
         conn.commit()
     return {"ok": True}
@@ -98,8 +98,8 @@ async def list_users_with_groups(_ = Depends(check_admin_perm)):
         for u in users:
             uid, email, cat = u
             groups = conn.execute("""
-                SELECT g.name FROM groups g 
-                JOIN user_groups ug ON g.id = ug.group_id 
+                SELECT g.name FROM account_roles g 
+                JOIN account_role_members ug ON g.id = ug.group_id 
                 WHERE ug.user_id=?
             """, (uid,)).fetchall()
             result.append({

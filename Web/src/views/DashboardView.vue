@@ -36,7 +36,7 @@
     </div>
 
     <!-- 服务器控制 -->
-    <div v-if="hasServers" class="ctrl-panel">
+    <div v-if="canShowServerControl" class="ctrl-panel">
       <div class="ctrl-left">
         <div class="ctrl-label">服务器控制</div>
         <div class="ctrl-name">{{ activeServer?.name || '未选择服务器' }}</div>
@@ -87,20 +87,11 @@
             <line x1="12" y1="8" x2="12" y2="12"/>
             <line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
-          <template v-if="isServerOwner && activeServer?.local_start_path">
-            <!-- ✦ 同机启动：路径已由 Agent 自动检测，说明后端与 TShock 在同一台机器 -->
-            <button class="power-btn btn-local-start" :disabled="localStarting" @click="doLocalStart">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="5 3 19 12 5 21 5 3"/>
-              </svg>
-              {{ localStarting ? '启动中…' : '启动服务器' }}
-            </button>
-            <span v-if="localStartMsg" class="ctrl-hint" :class="localStartOk ? 'hint-ok' : 'hint-err'">{{ localStartMsg }}</span>
-          </template>
-          <span v-else>服务器已停止，请在主机端手动重启</span>
+          <span>服务器已停止，请在主机端手动重启</span>
         </div>
       </div>
     </div>
+
     <!-- ── 资源监控 (服主专区) ────────────────────────────────────── -->
     <template v-if="isServerOwner && agentOnline">
       <div class="section-title">系统资源</div>
@@ -342,7 +333,12 @@
 <script setup>
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getEmail, getToken } from '@/api/auth'
-import { updateServer, deleteGameAccount, assignCharacterOwner, deleteMemberCharacter } from '@/api/servers'
+import {
+  updateServer,
+  deleteGameAccount,
+  assignCharacterOwner,
+  deleteMemberCharacter,
+} from '@/api/servers'
 import { apiUrl } from '@/api/base'
 import PlayerActionPanel from '@/components/PlayerActionPanel.vue'
 import InventoryModal from '@/components/InventoryModal.vue'
@@ -356,6 +352,7 @@ const isServerOwner         = inject('isServerOwner',         computed(() => fal
 const activeServerKey       = inject('activeServerKey',       ref(''))
 const hasServers            = computed(() => myServers.value.length > 0)
 const canViewOthersInventory = computed(() => hasPerm('panel.inventory.view.others'))
+const canShowServerControl = computed(() => hasServers.value && canManageActiveServer.value)
 
 const props = defineProps({
   wsState:     { type: String,  default: 'disconnected' },
@@ -368,9 +365,6 @@ const email = getEmail() || ''
 const confirmStop  = ref(false)
 const stopping     = ref(false)
 const restarting   = ref(false)
-const localStarting  = ref(false)
-const localStartMsg  = ref('')
-const localStartOk   = ref(false)
 
 function sendWs(data) { window.__tshockSend?.(data) }
 
@@ -387,14 +381,6 @@ function doRestartServer() {
   restarting.value = true
   sendWs({ type: 'server_ctrl', msg_id: Date.now().toString(), timestamp: Date.now(),
            payload: { agent_key: activeServerKey.value, action: 'restart' } })
-}
-
-function doLocalStart() {
-  if (!activeServerKey.value) return
-  localStarting.value = true
-  localStartMsg.value = ''
-  sendWs({ type: 'local_server_start', msg_id: Date.now().toString(), timestamp: Date.now(),
-           payload: { agent_key: activeServerKey.value } })
 }
 
 // ── 实时状态 ─────────────────────────────────────────────────
@@ -1048,11 +1034,6 @@ function onWsMessage(e) {
   if (pkt.type === 'server_ctrl_resp') {
     stopping.value  = false
     restarting.value = false
-  } else if (pkt.type === 'local_server_start_resp') {
-    localStarting.value = false
-    localStartOk.value  = pkt.payload?.success ?? false
-    localStartMsg.value = pkt.payload?.msg || ''
-    setTimeout(() => { localStartMsg.value = '' }, 5000)
   } else if (pkt.type === 'status') {
     const meta = pkt.metadata?.agent_key
     if (!meta || meta === activeServerKey.value) {
@@ -1133,8 +1114,6 @@ watch(activeServerKey, () => {
   confirmStop.value   = false
   stopping.value      = false
   restarting.value    = false
-  localStarting.value = false
-  localStartMsg.value = ''
   localCfgDirty.value = false
   localCfgMsg.value   = ''
   dashMapImg.value     = null
@@ -1345,13 +1324,9 @@ const statCards = computed(() => [
 .btn-stop-nosave:hover { background: #ffedd5; }
 .btn-cancel  { background: #f1f5f9; color: #475569; }
 .btn-cancel:hover  { background: #e2e8f0; }
-.btn-local-start { background: #16a34a; color: #fff; border: 1px solid #16a34a; }
-.btn-local-start:hover { background: #15803d; }
 
 .confirm-text { font-size: 13px; font-weight: 600; color: #b45309; }
 .ctrl-hint    { font-size: 12px; color: #94a3b8; }
-.hint-ok      { color: #16a34a; }
-.hint-err     { color: #dc2626; }
 
 .offline-hint {
   display: flex; align-items: center; gap: 8px;

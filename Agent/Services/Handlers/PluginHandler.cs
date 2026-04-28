@@ -75,6 +75,13 @@ namespace TerrariaManagerAgent.Services.Handlers
             return pluginsDir;
         }
 
+        private string? GetPluginDocPath(string assemblyName)
+        {
+            if (string.IsNullOrWhiteSpace(assemblyName)) return null;
+            var path = Path.Combine(GetPluginsDir(), assemblyName + ".md");
+            return File.Exists(path) ? Path.GetFullPath(path) : null;
+        }
+
         // ── 热重载单个 DLL（公共逻辑，install/update/enable 共用）──────────────
 
         private async Task HotLoadAssembly(
@@ -206,6 +213,15 @@ namespace TerrariaManagerAgent.Services.Handlers
                     payload   = new { ref_id = envelope.MsgId, success = true, data = JToken.Parse(json) }
                 });
             }
+            catch (System.Net.Http.HttpRequestException ex)
+            {
+                await _wsService.SendAsync(new {
+                    type      = "plugin_cloud_list_resp",
+                    msg_id    = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload   = new { ref_id = envelope.MsgId, success = false, msg = FormatCloudPluginError(ex) }
+                });
+            }
             catch (Exception ex)
             {
                 await _wsService.SendAsync(new {
@@ -215,6 +231,27 @@ namespace TerrariaManagerAgent.Services.Handlers
                     payload   = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
                 });
             }
+        }
+
+        private static string FormatCloudPluginError(System.Net.Http.HttpRequestException ex)
+        {
+            var code = ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : 0;
+            if (code == 0)
+                code = DetectCloudGatewayStatusCode(ex.Message);
+            if (code is 502 or 503 or 504)
+                return $"云端插件服务暂不可用，请稍后重试（HTTP {code}）";
+            if (code > 0)
+                return $"云端插件服务请求失败（HTTP {code}）";
+            return "无法连接云端插件服务，请检查网络后重试";
+        }
+
+        private static int DetectCloudGatewayStatusCode(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return 0;
+            if (message.Contains("502") || message.Contains("Bad Gateway", StringComparison.OrdinalIgnoreCase)) return 502;
+            if (message.Contains("503") || message.Contains("Service Unavailable", StringComparison.OrdinalIgnoreCase)) return 503;
+            if (message.Contains("504") || message.Contains("Gateway Timeout", StringComparison.OrdinalIgnoreCase)) return 504;
+            return 0;
         }
 
         public async Task HandlePluginLocalList(PacketEnvelope envelope)
@@ -244,6 +281,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                             initialized   = pc.Initialized,
                             enabled       = true,
                             blacklisted   = _updateBlacklist.Contains(asmName),
+                            md_path       = (object?)GetPluginDocPath(asmName),
                         });
                     }
                 }
@@ -275,6 +313,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                             initialized   = true,
                             enabled       = true,
                             blacklisted   = _updateBlacklist.Contains(kv.Key),
+                            md_path       = (object?)GetPluginDocPath(kv.Key),
                         });
                     }
                 }
@@ -297,6 +336,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                         initialized   = false,
                         enabled       = false,
                         blacklisted   = _updateBlacklist.Contains(asmName),
+                        md_path       = (object?)GetPluginDocPath(asmName),
                     });
                 }
             }
@@ -406,6 +446,53 @@ namespace TerrariaManagerAgent.Services.Handlers
                 timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 payload   = new { ref_id = envelope.MsgId, success = true, files }
             });
+        }
+
+        public async Task HandlePluginLocalDocRead(PacketEnvelope envelope)
+        {
+            var jobj = JObject.Parse(envelope.Payload?.ToString() ?? "{}");
+            var path = jobj["path"]?.ToString() ?? "";
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    throw new InvalidOperationException("未指定文档路径");
+
+                var pluginsDir = Path.GetFullPath(GetPluginsDir());
+                var fullPath = Path.GetFullPath(path);
+                var pluginsRoot = pluginsDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    + Path.DirectorySeparatorChar;
+
+                if (!fullPath.StartsWith(pluginsRoot, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("文档路径不合法");
+
+                if (!string.Equals(Path.GetExtension(fullPath), ".md", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("仅支持读取 Markdown 文档");
+
+                if (!File.Exists(fullPath))
+                    throw new FileNotFoundException("文档不存在");
+
+                var info = new FileInfo(fullPath);
+                if (info.Length > 1024 * 1024)
+                    throw new InvalidOperationException("文档过大，无法在线预览");
+
+                var content = await File.ReadAllTextAsync(fullPath, System.Text.Encoding.UTF8);
+                await _wsService.SendAsync(new {
+                    type      = "plugin_local_doc_read_resp",
+                    msg_id    = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload   = new { ref_id = envelope.MsgId, success = true, path = fullPath, content }
+                });
+            }
+            catch (Exception ex)
+            {
+                await _wsService.SendAsync(new {
+                    type      = "plugin_local_doc_read_resp",
+                    msg_id    = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload   = new { ref_id = envelope.MsgId, success = false, path, msg = ex.Message }
+                });
+            }
         }
 
         public async Task HandlePluginInstall(PacketEnvelope envelope)

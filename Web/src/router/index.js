@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { getToken } from '@/api/auth'
+import { clearAuth, getCurrentUser, getToken } from '@/api/auth'
 
 const routes = [
   {
@@ -22,6 +22,12 @@ const routes = [
     path: '/forgot-password',
     name: 'ForgotPassword',
     component: () => import('@/views/ForgotPasswordView.vue'),
+  },
+  {
+    path: '/bootstrap-platform-admin',
+    name: 'BootstrapPlatformAdmin',
+    component: () => import('@/views/BootstrapPlatformAdminView.vue'),
+    meta: { guest: true }
   },
   {
     // 主布局（含侧边栏+顶栏）
@@ -53,6 +59,53 @@ const routes = [
         path: 'servers',
         name: 'Servers',
         component: () => import('@/views/ServersView.vue'),
+      },
+      {
+        path: 'messages',
+        name: 'Messages',
+        component: () => import('@/views/MessagesView.vue'),
+      },
+      {
+        path: 'platform-admin',
+        name: 'PlatformAdmin',
+        component: () => import('@/views/PlatformAdminView.vue'),
+        meta: { title: '平台总览' }
+      },
+      {
+        path: 'platform-admin/servers',
+        name: 'PlatformServers',
+        component: () => import('@/views/PlatformServersView.vue'),
+        meta: { title: '服务器管理' }
+      },
+      {
+        path: 'platform-admin/accounts',
+        name: 'PlatformAccounts',
+        component: () => import('@/views/PlatformAccountsView.vue'),
+        meta: { title: '账号管理' }
+      },
+      {
+        path: 'platform-admin/cloud-blacklist',
+        name: 'PlatformCloudBlacklist',
+        component: () => import('@/views/PlatformCloudBlacklistView.vue'),
+        meta: { title: '云黑审核' }
+      },
+      {
+        path: 'platform-admin/settings',
+        name: 'PlatformSettings',
+        component: () => import('@/views/PlatformSettingsView.vue'),
+        meta: { title: '平台设置' }
+      },
+      {
+        path: 'platform-admin/rbac',
+        name: 'PlatformRbac',
+        component: () => import('@/views/PlatformRbacView.vue'),
+        meta: { title: '平台权限组' }
+      },
+      {
+        path: 'platform-admin/announcements',
+        name: 'PlatformAnnouncements',
+        component: () => import('@/views/PlatformAnnouncementsView.vue'),
+        meta: { title: '公告管理' }
       },
       {
         path: 'users',
@@ -137,10 +190,40 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach((to) => {
+let authCheckPromise = null
+
+async function validateToken() {
   const token = getToken()
-  if (to.meta.requiresAuth && !token) return { name: 'Login' }
-  if (to.meta.guest && token) return { name: 'Home' }
+  if (!token) return false
+  if (!authCheckPromise) {
+    authCheckPromise = getCurrentUser()
+      .then(() => true)
+      .catch((err) => {
+        if (err?.status === 401 || err?.status === 403) {
+          clearAuth()
+          return false
+        }
+        console.warn('[Auth] 跳过本次登录态校验失败:', err?.message || err)
+        return true
+      })
+      .finally(() => {
+        authCheckPromise = null
+      })
+  }
+  return authCheckPromise
+}
+
+router.beforeEach(async (to) => {
+  const token = getToken()
+  if (to.meta.requiresAuth) {
+    if (!token) return { name: 'Login' }
+    const valid = await validateToken()
+    if (!valid) return { name: 'Login' }
+  }
+  if (to.meta.guest && token) {
+    const valid = await validateToken()
+    if (valid) return { name: 'Home' }
+  }
 })
 
 export default router

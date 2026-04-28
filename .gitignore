@@ -395,3 +395,6 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 docs/参考/
+Agent/bin/TShock/ServerPlugins/HttpServer.dll
+Agent/bin/TShock/ServerPlugins/TerrariaManagerAgent.deps.json
+Agent/bin/TShock/ServerPlugins/TerrariaManagerAgent.dll

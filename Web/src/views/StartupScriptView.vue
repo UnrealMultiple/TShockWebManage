@@ -1,9 +1,8 @@
 <template>
   <div class="ss-page">
     <!-- 顶部标题栏 -->
-    <div class="ss-header">
-      <div class="ss-header-left">
-        <h2 class="ss-title">启动脚本设置</h2>
+    <PageHeader title="启动脚本设置">
+      <template #meta>
         <span v-if="scriptInfo.platform" :class="['ss-badge', scriptInfo.platform === 'windows' ? 'win' : 'linux']">
           {{ scriptInfo.platform === 'windows' ? 'Windows' : 'Linux' }}
         </span>
@@ -11,8 +10,8 @@
           {{ scriptInfo.found ? `已找到 ${scriptInfo.filename}` : '未找到脚本，将新建' }}
         </span>
         <span v-if="modified" class="ss-badge unsaved">未保存</span>
-      </div>
-      <div class="ss-header-right">
+      </template>
+      <template #actions>
         <button class="ss-btn ss-btn-outline" @click="loadScript" :disabled="loading || !agentOnline || !activeServerKey">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="1 4 1 10 7 10"/>
@@ -28,19 +27,14 @@
           </svg>
           {{ saving ? '保存中…' : '保存脚本' }}
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- 内容区（可滚动） -->
     <div class="ss-content">
 
     <!-- 离线提示 -->
-    <div v-if="!agentOnline" class="ss-offline">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      TShock 未连接，无法读取或保存脚本。
-    </div>
+    <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法读取或保存脚本。请先启动服务器。" />
 
     <template v-else>
       <div v-if="loading" class="ss-loading">
@@ -297,6 +291,8 @@
 
 <script setup>
 import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 const activeServerKey       = inject('activeServerKey',       ref(''))
 const canManageActiveServer = inject('canManageActiveServer', computed(() => false))
@@ -538,12 +534,6 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
 <style scoped>
 .ss-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: #f8fafc; }
 
-/* 顶栏 */
-.ss-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 28px 16px; background: #fff; border-bottom: 1px solid #e2e8f0; flex-shrink: 0; flex-wrap: wrap; gap: 12px; }
-.ss-header-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.ss-title { margin: 0; font-size: 18px; font-weight: 700; color: #0f172a; }
-.ss-header-right { display: flex; gap: 8px; }
-
 /* 内容区 */
 .ss-content { flex: 1; overflow-y: auto; padding: 24px 28px; box-sizing: border-box; }
 
@@ -565,9 +555,6 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
 .ss-btn-primary { background: #3b82f6; color: #fff; }
 .ss-btn-primary:hover:not(:disabled) { background: #2563eb; }
 
-/* 提示 */
-.ss-offline { display: flex; align-items: center; gap: 12px; padding: 14px 18px; background: #fff7ed; border: 1px solid #fcd34d; border-radius: 10px; font-size: 14px; color: #92400e; }
-.ss-offline svg { width: 20px; height: 20px; flex-shrink: 0; color: #94a3b8; }
 .ss-loading { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 60px 24px; color: #64748b; font-size: 14px; flex-direction: row; }
 .ss-spinner { width: 28px; height: 28px; border: 3px solid #e2e8f0; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -636,7 +623,6 @@ onUnmounted(() => window.removeEventListener('ws-message', onWsMessage))
   .ss-right { position: static; }
 }
 @media (max-width: 860px) {
-  .ss-header { padding: 16px 20px 12px; }
   .ss-content { padding: 16px 20px; }
 }
 @media (max-width: 560px) {

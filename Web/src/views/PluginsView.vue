@@ -1,12 +1,8 @@
 <template>
   <div class="plg-page">
     <!-- ── 顶部标题栏 ── -->
-    <div class="plg-header">
-      <div class="plg-header-left">
-        <h2 class="plg-title">插件管理</h2>
-        <span class="plg-subtitle">插件配置 · 安装</span>
-      </div>
-      <div class="plg-header-right">
+    <PageHeader title="插件管理" subtitle="插件配置 · 安装">
+      <template #actions>
         <button class="plg-btn plg-btn-outline" @click="loadPage" :disabled="loading || !agentOnline || !activeServerKey">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="1 4 1 10 7 10"/>
@@ -21,18 +17,11 @@
           </svg>
           {{ reloading ? '重载中…' : '立即重载' }}
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Agent 离线提示 -->
-    <div v-if="!agentOnline" class="plg-offline">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/>
-        <line x1="12" y1="8" x2="12" y2="12"/>
-        <line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      <span>Agent 未连接，无法管理插件。请先启动服务器。</span>
-    </div>
+    <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理插件。请先启动服务器。" />
 
     <template v-else>
       <!-- ── 标签页切换：配置 / 安装 ── -->
@@ -304,7 +293,7 @@
               </button>
               <!-- 文档 -->
               <button class="plg-action-btn doc"
-                @click="openPluginDoc(plugin.assembly_name, plugin.name)"
+                @click="openPluginDoc(plugin.assembly_name, plugin.name, plugin.md_path)"
                 title="查看插件文档">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px">
                   <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
@@ -338,7 +327,7 @@
               <line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
             <div>
-              <strong>获取云端列表失败</strong>
+              <strong>{{ cloudErrorTitle }}</strong>
               <p>{{ cloudError }}</p>
               <button class="plg-btn plg-btn-outline" style="margin-top:8px" @click="loadCloudList">重试</button>
             </div>
@@ -425,6 +414,8 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, inject } from 'vue'
 import PluginJsonEditor from '../components/config/PluginJsonEditor.vue'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -473,6 +464,7 @@ const cfgParsed = computed(() => {
 // ── 安装 Tab 状态 ───────────────────────────────────────────────────────
 const cloudLoading   = ref(false)
 const cloudError     = ref('')
+const cloudErrorTitle = ref('获取云端列表失败')
 const cloudPlugins   = ref([])
 const cloudSearch    = ref('')
 const installingIdx  = ref(null)
@@ -751,12 +743,26 @@ function loadCloudList() {
   if (!activeServerKey.value) return
   cloudLoading.value = true
   cloudError.value = ''
+  cloudErrorTitle.value = '获取云端列表失败'
   window.__tshockSend?.({
     type: 'plugin_cloud_list',
     msg_id: `plg-cloud-${Date.now()}`,
     timestamp: Date.now(),
     payload: { agent_key: activeServerKey.value },
   })
+}
+
+function formatCloudListError(msg) {
+  const text = String(msg || '').trim()
+  if (!text) {
+    return { title: '获取云端列表失败', message: '请稍后重试' }
+  }
+  const codeMatch = text.match(/\b(502|503|504)\b/)
+  if (codeMatch || /bad gateway/i.test(text)) {
+    const code = codeMatch?.[1] || '502'
+    return { title: '云端插件服务暂不可用', message: `请稍后重试（HTTP ${code}）` }
+  }
+  return { title: '获取云端列表失败', message: text }
 }
 
 // ── 选中并读取配置文件 ──────────────────────────────────────────────────
@@ -905,11 +911,32 @@ function normalizeDocName(name) {
   return stripLangSuffix((name || '').replace(/\.(json|dll)$/i, ''))
 }
 
-async function openPluginDoc(primaryName, fallbackName = '') {
+let _docModalReadMsgId = null
+let _docModalReadTimer = null
+async function openPluginDoc(primaryName, fallbackName = '', localDocPath = '') {
   showDocModal.value = true
   docModalTitle.value = primaryName || fallbackName || '插件'
   docModalLoading.value = true
   docModalContent.value = ''
+  if (_docModalReadTimer) clearTimeout(_docModalReadTimer)
+
+  if (localDocPath) {
+    const msgId = `plg-docmodal-${Date.now()}`
+    _docModalReadMsgId = msgId
+    _docModalReadTimer = setTimeout(() => {
+      if (_docModalReadMsgId === msgId) {
+        _docModalReadMsgId = null
+        docModalLoading.value = false
+      }
+    }, 15000)
+    window.__tshockSend?.({
+      type: 'plugin_local_doc_read',
+      msg_id: msgId,
+      timestamp: Date.now(),
+      payload: { agent_key: activeServerKey.value, path: localDocPath },
+    })
+    return
+  }
 
   const candidates = [
     normalizeDocName(primaryName),
@@ -942,17 +969,28 @@ async function openPluginDoc(primaryName, fallbackName = '') {
 function closeDocModal() {
   showDocModal.value = false
   docModalContent.value = ''
+  _docModalReadMsgId = null
+  if (_docModalReadTimer) clearTimeout(_docModalReadTimer)
+  _docModalReadTimer = null
 }
 
-// 本地 MD 文档（通过 file_read 发给 Agent 读取）
+// 本地 MD 文档
 let _docReadMsgId = null
+let _docReadTimer = null
 function loadLocalDoc(mdPath) {
   docLoading.value = true
   docContent.value = ''
+  if (_docReadTimer) clearTimeout(_docReadTimer)
   const msgId = `plg-docread-${Date.now()}`
   _docReadMsgId = msgId
+  _docReadTimer = setTimeout(() => {
+    if (_docReadMsgId === msgId) {
+      _docReadMsgId = null
+      docLoading.value = false
+    }
+  }, 15000)
   window.__tshockSend?.({
-    type: 'file_read',
+    type: 'plugin_local_doc_read',
     msg_id: msgId,
     timestamp: Date.now(),
     payload: { agent_key: activeServerKey.value, path: mdPath },
@@ -1038,18 +1076,29 @@ function onWsMessage(e) {
     return
   }
 
-  // 文件读取（共用 file_read_resp）
-  if (pkt.type === 'file_read_resp') {
-    // 本地 MD 文档读取（用 payload.ref_id 匹配请求 msg_id，因为响应的 msg_id 是新生成的 GUID）
-    if (p.ref_id === _docReadMsgId) {
-      _docReadMsgId = null
-      docLoading.value = false
-      if (p.success) docContent.value = p.content
+  if (pkt.type === 'plugin_local_doc_read_resp') {
+    if (p.ref_id === _docModalReadMsgId) {
+      _docModalReadMsgId = null
+      if (_docModalReadTimer) clearTimeout(_docModalReadTimer)
+      _docModalReadTimer = null
+      docModalLoading.value = false
+      if (p.success) docModalContent.value = p.content
       return
     }
-    // 配置文件读取
+    if (p.ref_id !== _docReadMsgId) return
+    _docReadMsgId = null
+    if (_docReadTimer) clearTimeout(_docReadTimer)
+    _docReadTimer = null
+    docLoading.value = false
+    if (p.success) docContent.value = p.content
+    return
+  }
+
+  // 文件读取（共用 file_read_resp）
+  if (pkt.type === 'file_read_resp') {
+    // 配置文件读取：必须匹配当前选中的文件路径
+    if (!selectedConfig.value || p.path !== selectedConfig.value.full_path) return
     cfgLoading.value = false
-    if (!selectedConfig.value) return
     if (p.success) {
       cfgText.value = p.content
       cfgModified.value = false
@@ -1084,7 +1133,9 @@ function onWsMessage(e) {
       const raw = p.data
       cloudPlugins.value = Array.isArray(raw) ? raw : (raw?.data ?? [])
     } else {
-      cloudError.value = p.msg || '获取云端列表失败'
+      const formatted = formatCloudListError(p.msg)
+      cloudErrorTitle.value = formatted.title
+      cloudError.value = formatted.message
     }
     return
   }
@@ -1224,6 +1275,7 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   cfgText.value = ''
   cloudPlugins.value = []
   cloudError.value = ''
+  cloudErrorTitle.value = '获取云端列表失败'
   apmInstalled.value = null
   localPlugins.value = []
   localResult.value = null
@@ -1246,25 +1298,6 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   background: #f8fafc;
 }
 
-/* ── 顶部标题栏 ── */
-.plg-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 28px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-}
-.plg-header-left  { display: flex; align-items: center; gap: 10px; }
-.plg-header-right { display: flex; align-items: center; gap: 8px; }
-.plg-title        { margin: 0; font-size: 18px; font-weight: 700; color: #0f172a; }
-.plg-subtitle {
-  font-size: 12px; color: #64748b;
-  background: #f1f5f9; border: 1px solid #e2e8f0;
-  padding: 2px 8px; border-radius: 20px;
-}
-
 /* ── 按钮 ── */
 .plg-btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1280,15 +1313,6 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
 .plg-btn-outline { background: #fff; color: #374151; border: 1px solid #d1d5db; }
 .plg-btn-outline:hover:not(:disabled) { background: #f9fafb; border-color: #9ca3af; }
 .plg-btn-sm { padding: 5px 12px; font-size: 12px; }
-
-/* ── 离线提示 ── */
-.plg-offline {
-  display: flex; align-items: center; gap: 10px;
-  margin: 24px; padding: 14px 18px;
-  background: #fef3c7; border: 1px solid #fde68a; border-radius: 10px;
-  color: #92400e; font-size: 14px;
-}
-.plg-offline svg { width: 18px; height: 18px; flex-shrink: 0; }
 
 /* ── 标签页 ── */
 .plg-tabs {

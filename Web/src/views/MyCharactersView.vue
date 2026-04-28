@@ -1,12 +1,13 @@
 <template>
   <div class="mc-page">
-    <div class="page-header">
-      <h1 class="page-title">我的游戏角色</h1>
+    <PageHeader title="我的游戏角色" heading-tag="h1" class="mc-page-header">
+      <template #actions>
       <button class="btn btn-sm btn-outline" @click="loadCharacters" :disabled="loadingChars">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;flex-shrink:0"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.18"/></svg>
         {{ loadingChars ? '加载中…' : '刷新' }}
       </button>
-    </div>
+      </template>
+    </PageHeader>
 
     <div v-if="!activeKey" class="hint-box">
       <div class="hint-icon">🎮</div>
@@ -25,9 +26,7 @@
           注册后可使用此用户名和密码在游戏内登录服务器（SSC 模式）
         </div>
 
-        <div v-if="!agentOnline" class="warn-box">
-          ⚠️ 服务器 Agent 未连接，无法完成注册
-        </div>
+        <AgentOfflineNotice v-if="!agentOnline" compact message="Agent 未连接，无法完成注册。" />
 
         <div class="reg-form" :class="{ disabled: !agentOnline }">
           <div class="field-row">
@@ -58,7 +57,7 @@
           </div>
           <button
             class="btn btn-primary reg-btn"
-            :disabled="regLoading || !agentOnline || !regUsername.trim() || regPassword.length < 1"
+            :disabled="regLoading || !agentOnline || !regUsername || regPassword.length < 1"
             @click="submitRegister"
           >
             {{ regLoading ? '注册中…' : '提交注册' }}
@@ -73,9 +72,7 @@
           游戏内已有角色但未与面板绑定？填写角色名，系统将向该角色发送验证码（必须该角色本人在线且已登录）
         </div>
 
-        <div v-if="!agentOnline" class="warn-box">
-          ⚠️ 服务器 Agent 未连接，无法发送验证码
-        </div>
+        <AgentOfflineNotice v-if="!agentOnline" compact message="Agent 未连接，无法发送验证码。" />
 
         <template v-else>
           <!-- Step 1：输入用户名 -->
@@ -96,7 +93,7 @@
             </div>
             <button
               class="btn btn-primary reg-btn"
-              :disabled="bindLoading || !bindUsername.trim()"
+              :disabled="bindLoading || !bindUsername"
               @click="sendBindCode"
             >
               {{ bindLoading ? '发送中…' : '📨 发送验证码' }}
@@ -243,11 +240,15 @@ import { getToken } from '@/api/auth'
 import { deleteMyCharacter } from '@/api/servers'
 import { apiUrl } from '@/api/base'
 import InventoryModal from '@/components/InventoryModal.vue'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 import { useInventory } from '@/composables/useInventory'
+import { useFeedback } from '@/composables/useFeedback'
 
 const myServers    = inject('myServers', ref([]))
 const activeKey    = inject('activeServerKey', ref(''))
 const activeServer = inject('activeServer', ref(null))
+const { toast } = useFeedback()
 
 const props = defineProps({
   agentOnline: { type: Boolean, default: false },
@@ -358,7 +359,7 @@ async function confirmDelete(charName) {
     deleteConfirm.value[charName] = false
     await loadCharacters()
   } catch (e) {
-    alert('删除失败: ' + e.message)
+    toast.error('删除失败: ' + e.message)
     deleteConfirm.value[charName] = false
   } finally {
     deleteLoading.value[charName] = false
@@ -386,9 +387,25 @@ const bindVerifyMsg      = ref('')
 const bindVerifySuccess  = ref(false)
 const bindVerifyLoading  = ref(false)
 let   bindReqId          = null
+const blockedNamePattern = /[\p{Cc}\p{Cf}\p{Zs}\p{Zl}\p{Zp}]/u
+
+function validateCharacterNameInput(value) {
+  const raw = String(value || '')
+  if (!raw) return '用户名不能为空'
+  if (raw !== raw.trim()) return '玩家名字不能包含前后空白字符'
+  if (blockedNamePattern.test(raw)) return '玩家名字不能包含空白、零宽字符、控制字符或不可见格式字符'
+  return ''
+}
 
 function sendBindCode() {
-  if (!bindUsername.value.trim() || !activeKey.value || !props.agentOnline) return
+  const username = String(bindUsername.value || '')
+  const nameError = validateCharacterNameInput(username)
+  if (nameError) {
+    bindMsg.value = nameError
+    bindSuccess.value = false
+    return
+  }
+  if (!activeKey.value || !props.agentOnline) return
   bindLoading.value = true
   bindMsg.value = ''
   bindReqId = Math.random().toString(36).slice(2)
@@ -396,7 +413,7 @@ function sendBindCode() {
     type:      'send_bind_code',
     msg_id:    bindReqId,
     timestamp: Date.now(),
-    payload:   { agent_key: activeKey.value, username: bindUsername.value.trim() },
+    payload:   { agent_key: activeKey.value, username },
   })
   setTimeout(() => {
     if (bindLoading.value) {
@@ -410,6 +427,13 @@ function sendBindCode() {
 
 async function verifyBindCode() {
   if (!bindCode.value.trim()) return
+  const username = String(bindUsername.value || '')
+  const nameError = validateCharacterNameInput(username)
+  if (nameError) {
+    bindVerifyMsg.value = nameError
+    bindVerifySuccess.value = false
+    return
+  }
   const srv = myServers.value.find(s => s.agent_key === activeKey.value)
   if (!srv) return
   bindVerifyLoading.value = true
@@ -418,7 +442,7 @@ async function verifyBindCode() {
     const res = await fetch(apiUrl(`/api/servers/${srv.id}/bind-verify`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
-      body: JSON.stringify({ username: bindUsername.value.trim(), code: bindCode.value.trim() }),
+      body: JSON.stringify({ username, code: bindCode.value.trim() }),
     })
     const data = await res.json()
     if (!res.ok) {
@@ -454,7 +478,14 @@ const regLoading  = ref(false)
 let   regReqId    = null
 
 function submitRegister() {
-  if (!regUsername.value.trim() || !regPassword.value) return
+  const username = String(regUsername.value || '')
+  const nameError = validateCharacterNameInput(username)
+  if (nameError) {
+    regMsg.value = nameError
+    regSuccess.value = false
+    return
+  }
+  if (!regPassword.value) return
   if (!activeKey.value || !props.agentOnline) {
     regMsg.value = 'Agent 未连接'
     regSuccess.value = false
@@ -469,7 +500,7 @@ function submitRegister() {
     timestamp: Date.now(),
     payload:   {
       agent_key: activeKey.value,
-      username:  regUsername.value.trim(),
+      username,
       password:  regPassword.value,
     },
   })
@@ -568,13 +599,7 @@ function formatTime(ts) {
   box-sizing: border-box;
 }
 
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-  flex-shrink: 0;
-}
+.mc-page-header { margin: -20px -24px 20px; }
 
 /* ── 左右双列布局 ─────────────────────────────────────── */
 .mc-body {
@@ -623,13 +648,6 @@ function formatTime(ts) {
   background: #f1f5f9;
   padding: 2px 8px;
   border-radius: 20px;
-}
-
-.page-title {
-  font-size: 1.35rem;
-  font-weight: 700;
-  margin: 0;
-  color: #0f172a;
 }
 
 .hint-box {
@@ -891,16 +909,6 @@ function formatTime(ts) {
   color: #64748b;
   margin-bottom: 16px;
   line-height: 1.5;
-}
-
-.warn-box {
-  background: #fffbeb;
-  border: 1px solid #fde68a;
-  border-radius: 8px;
-  padding: 10px 14px;
-  color: #92400e;
-  font-size: .85rem;
-  margin-bottom: 14px;
 }
 
 .reg-form {

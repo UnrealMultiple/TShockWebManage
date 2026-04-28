@@ -11,11 +11,11 @@
       <!-- 表单 -->
       <form @submit.prevent="handleLogin">
         <div class="field">
-          <label>QQ 邮箱</label>
+          <label>QQ 号 / QQ 邮箱</label>
           <input
             v-model="form.email"
-            type="email"
-            placeholder="example@qq.com"
+            type="text"
+            placeholder="123456789 或 123456789@qq.com"
             autocomplete="username"
             :disabled="loading"
           />
@@ -53,9 +53,10 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { login, saveAuth } from '@/api/auth'
+import { login, saveAuth, getBootstrapStatus } from '@/api/auth'
+import { normalizeQqEmailInput, qqEmailInputError } from '@/utils/qqEmail'
 
 const router = useRouter()
 const form   = ref({ email: '', password: '' })
@@ -69,23 +70,40 @@ function handleLogoError() {
   }
 }
 
+async function checkBootstrapRequired() {
+  try {
+    const status = await getBootstrapStatus()
+    if (status.bootstrap_required) router.replace('/bootstrap-platform-admin')
+  } catch {
+    // 忽略，允许用户继续在登录页操作
+  }
+}
+
 async function handleLogin() {
   error.value = ''
   if (!form.value.email || !form.value.password) {
-    error.value = '请填写邮箱和密码'
+    error.value = '请填写 QQ 号和密码'
+    return
+  }
+  const email = normalizeQqEmailInput(form.value.email)
+  if (!email) {
+    error.value = qqEmailInputError()
     return
   }
   loading.value = true
   try {
-    const res = await login(form.value.email, form.value.password)
+    const res = await login(email, form.value.password)
     saveAuth(res.token, res.email)
-    router.push('/home')
+    const bootstrap = await getBootstrapStatus()
+    router.push(bootstrap.bootstrap_required ? '/bootstrap-platform-admin' : '/home')
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
   }
 }
+
+onMounted(checkBootstrapRequired)
 </script>
 
 <style scoped>

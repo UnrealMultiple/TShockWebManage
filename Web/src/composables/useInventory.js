@@ -9,8 +9,10 @@
  *   inv.consumeWsMessage(pkt)
  */
 import { ref } from 'vue'
+import { useFeedback } from '@/composables/useFeedback'
 
 export function useInventory() {
+  const { toast } = useFeedback()
   const invVisible    = ref(false)
   const invUsername   = ref('')
   const invLoading    = ref(false)
@@ -95,7 +97,8 @@ export function useInventory() {
       if (p.ref_id !== pendingSaveId) return false
       pendingSaveId   = null
       invSaving.value = false
-      alert(p.success ? (p.msg || '保存成功') : ('保存失败: ' + (p.msg || '未知错误')))
+      if (p.success) toast.success(p.msg || '保存成功')
+      else toast.error('保存失败: ' + (p.msg || '未知错误'))
       return true
     }
 

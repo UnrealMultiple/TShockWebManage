@@ -22,6 +22,7 @@ namespace TerrariaManagerAgent.Services
         private readonly PluginHandler    _plugin;
         private readonly ServerHandler    _server;
         private readonly WorldHandler     _world;
+        private readonly AgentStoreHandler _store;
 
         private static readonly HashSet<string> NoisyReadOps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -29,6 +30,7 @@ namespace TerrariaManagerAgent.Services
             "read_startup_script",
             "read_motd",
             "plugin_list_configs",
+            "plugin_local_doc_read",
             "plugin_local_list",
             "plugin_cloud_list",
             "plugin_check_updates",
@@ -49,6 +51,8 @@ namespace TerrariaManagerAgent.Services
             "get_minimap",
             "get_player_positions",
             "list_banlists",
+            "agent_character_exists",
+            "agent_character_list",
         };
 
         private sealed class AuditWindowState
@@ -80,6 +84,11 @@ namespace TerrariaManagerAgent.Services
             "add_banlist",
             "remove_banlist",
             "update_banlist_groups",
+            "agent_character_bind",
+            "agent_character_delete",
+            "agent_character_assign",
+            "agent_blacklist_add",
+            "agent_blacklist_remove",
         };
 
         public static void SetAuditLevel(string? level)
@@ -102,6 +111,7 @@ namespace TerrariaManagerAgent.Services
             _plugin    = new PluginHandler(wsService);
             _server    = new ServerHandler(wsService);
             _world     = new WorldHandler(wsService);
+            _store     = new AgentStoreHandler(wsService);
         }
 
         public async Task ProcessRawMessage(string json)
@@ -148,6 +158,7 @@ namespace TerrariaManagerAgent.Services
                     case "read_motd":            await _server.HandleReadMotd(envelope);             break;
                     case "write_motd":           await _server.HandleWriteMotd(envelope);            break;
                     case "plugin_list_configs":  await _plugin.HandlePluginListConfigs(envelope);    break;
+                    case "plugin_local_doc_read": await _plugin.HandlePluginLocalDocRead(envelope);   break;
                     case "plugin_cloud_list":    await _plugin.HandlePluginCloudList(envelope);      break;
                     case "plugin_local_list":    await _plugin.HandlePluginLocalList(envelope);      break;
                     case "plugin_install":       await _plugin.HandlePluginInstall(envelope);        break;
@@ -158,7 +169,8 @@ namespace TerrariaManagerAgent.Services
                     case "plugin_enable":        await _plugin.HandlePluginEnable(envelope);         break;
                     case "plugin_blacklist":     await _plugin.HandlePluginBlacklist(envelope);      break;
                     case "plugin_install_apm":   await _plugin.HandleApmInstall(envelope);           break;
-                    case "plugin_check_apm":     await _plugin.HandleCheckApm(envelope);             break;                    case "world_progress":         await _world.HandleWorldProgress(envelope);          break;
+                    case "plugin_check_apm":     await _plugin.HandleCheckApm(envelope);             break;
+                    case "world_progress":         await _world.HandleWorldProgress(envelope);          break;
                     case "player_stats":           await _player.HandlePlayerStats(envelope);           break;
                     case "list_bans":              await _player.HandleListBans(envelope);             break;
                     case "unban_by_ticket":        await _player.HandleUnbanByTicket(envelope);        break;
@@ -176,6 +188,13 @@ namespace TerrariaManagerAgent.Services
                     case "create_game_group":      await _player.HandleCreateGameGroup(envelope);       break;
                     case "update_game_group":      await _player.HandleUpdateGameGroup(envelope);       break;
                     case "delete_game_group":      await _player.HandleDeleteGameGroup(envelope);       break;
+                    case "agent_character_exists": await _store.HandleCharacterExists(envelope);        break;
+                    case "agent_character_bind":   await _store.HandleCharacterBind(envelope);          break;
+                    case "agent_character_delete": await _store.HandleCharacterDelete(envelope);        break;
+                    case "agent_character_assign": await _store.HandleCharacterAssign(envelope);        break;
+                    case "agent_character_list":   await _store.HandleCharacterList(envelope);          break;
+                    case "agent_blacklist_add":    await _store.HandleBlacklistAdd(envelope);           break;
+                    case "agent_blacklist_remove": await _store.HandleBlacklistRemove(envelope);        break;
                 }
             }
             catch (Exception ex)

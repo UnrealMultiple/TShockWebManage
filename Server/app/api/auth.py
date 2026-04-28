@@ -1,11 +1,13 @@
 import sqlite3
-import re
 import secrets
 import time
-from fastapi import APIRouter, HTTPException, Request
-from app.core.config import AUTH_DB_PATH
+from fastapi import APIRouter, Depends, HTTPException, Request
+from app.core.config import AUTH_DB_PATH, BOOTSTRAP_TOKEN
+from app.core.schema import init_auth_db
+from app.core.qq_email import normalize_qq_email
 from app.core.utils import hash_pw, make_token
-from app.models.schemas import SendCodeReq, RegisterReq, LoginReq, ResetSendCodeReq, ResetConfirmReq
+from app.models.schemas import SendCodeReq, RegisterReq, LoginReq, ResetSendCodeReq, ResetConfirmReq, BootstrapPlatformAdminReq
+from app.api import deps
 from app.services.mail_service import send_email_code
 
 router = APIRouter(prefix="/api/auth")
@@ -13,7 +15,6 @@ router = APIRouter(prefix="/api/auth")
 _pending = {}
 # 验证码发送限流状态：key -> {timestamps: [ts...], lock_until: ts}
 _code_send_guard = {}
-QQ_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@qq\.com$", re.IGNORECASE)
 
 # 单次发送冷却：同一邮箱至少间隔 60 秒
 CODE_SEND_CD_SECONDS = 60
@@ -72,94 +73,47 @@ def _record_send_guard(email: str, scene: str, client_ip: str):
     state["timestamps"] = recent
     _code_send_guard[key] = state
 
+
+def _has_platform_admin(conn: sqlite3.Connection) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM platform_members WHERE is_platform_admin = 1 LIMIT 1"
+    ).fetchone() is not None
+
+
+def _ensure_bootstrap_open(conn: sqlite3.Connection):
+    if _has_platform_admin(conn):
+        raise HTTPException(409, "平台已存在超级管理员，无需首次初始化")
+
+
+def _check_bootstrap_token(token: str):
+    if not BOOTSTRAP_TOKEN:
+        raise HTTPException(503, "服务端未配置平台初始化令牌")
+    if not token or token.strip() != BOOTSTRAP_TOKEN:
+        raise HTTPException(403, "初始化令牌无效")
+
+
 def init_db():
-    with sqlite3.connect(AUTH_DB_PATH) as conn:
-        # 用户表
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                email      TEXT    UNIQUE NOT NULL,
-                pw_hash    TEXT    NOT NULL,
-                salt       TEXT    NOT NULL,
-                created_at INTEGER NOT NULL
-            )
-        """)
-        # 角色组表 (Group)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS groups (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                name        TEXT    UNIQUE NOT NULL,
-                parent_id   INTEGER,
-                description TEXT,
-                FOREIGN KEY (parent_id) REFERENCES groups(id)
-            )
-        """)
-        # 权限表 (Permission)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS group_permissions (
-                group_id   INTEGER NOT NULL,
-                permission TEXT    NOT NULL,
-                PRIMARY KEY (group_id, permission),
-                FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
-            )
-        """)
-        # 用户-组关联表 (User-Group Relation)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_groups (
-                user_id    INTEGER NOT NULL,
-                group_id   INTEGER NOT NULL,
-                PRIMARY KEY (user_id, group_id),
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
-            )
-        """)
-        # 游戏角色绑定表
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS game_characters (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id        INTEGER NOT NULL,
-                agent_key      TEXT    NOT NULL,
-                character_name TEXT    NOT NULL,
-                registered_at  INTEGER NOT NULL,
-                UNIQUE(agent_key, character_name),
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            )
-        """)
-        
-        # 初始化默认角色 (模仿 TShock)
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM groups WHERE name='superadmin'")
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO groups(name, description) VALUES('superadmin', '超级管理员，拥有所有权限')")
-            cursor.execute("INSERT INTO groups(name, description) VALUES('admin', '管理员')")
-            cursor.execute("INSERT INTO groups(name, description) VALUES('default', '普通用户')")
-            
-            # 为 superadmin 添加通配符权限
-            cursor.execute("SELECT id FROM groups WHERE name='superadmin'")
-            sid = cursor.fetchone()[0]
-            cursor.execute("INSERT INTO group_permissions(group_id, permission) VALUES(?, '*')", (sid,))
-            
-        conn.commit()
+    init_auth_db()
+
 
 init_db()
 
 @router.post("/send-code")
 async def api_send_code(req: SendCodeReq, request: Request):
-    if not QQ_RE.match(req.email):
-        raise HTTPException(400, "仅支持 QQ 邮箱注册")
+    email = normalize_qq_email(req.email)
 
     client_ip = request.client.host if request.client else "unknown"
-    _check_send_guard(req.email, "register", client_ip)
+    _check_send_guard(email, "register", client_ip)
     
     with sqlite3.connect(AUTH_DB_PATH) as conn:
-        if conn.execute("SELECT 1 FROM users WHERE email=? COLLATE NOCASE", (req.email,)).fetchone():
+        if conn.execute("SELECT 1 FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone():
             raise HTTPException(409, "该邮箱已注册")
     
     salt = secrets.token_hex(16)
     pw_hash = hash_pw(req.password, salt)
     code = str(secrets.randbelow(900000) + 100000)
     
-    _pending[req.email.lower()] = {
+    _pending[email] = {
         "code": code,
         "expires_at": time.time() + 300,
         "pw_hash": pw_hash,
@@ -167,19 +121,16 @@ async def api_send_code(req: SendCodeReq, request: Request):
     }
     
     try:
-        await send_email_code(req.email, code)
+        await send_email_code(email, code)
     except Exception as e:
         raise HTTPException(500, f"邮件发送失败：{e}")
 
-    _record_send_guard(req.email, "register", client_ip)
+    _record_send_guard(email, "register", client_ip)
     return {"ok": True}
 
 @router.post("/register")
 async def api_register(req: RegisterReq):
-    if not QQ_RE.match(req.email):
-        raise HTTPException(400, "仅支持 QQ 邮箱注册")
-
-    key = req.email.lower()
+    key = normalize_qq_email(req.email)
     p = _pending.get(key)
     if not p or time.time() > p["expires_at"]:
         raise HTTPException(400, "验证码无效或已过期")
@@ -194,9 +145,9 @@ async def api_register(req: RegisterReq):
             uid = cursor.lastrowid
             
             # 默认赋予 'default' 角色
-            grow = cursor.execute("SELECT id FROM groups WHERE name='default'").fetchone()
+            grow = cursor.execute("SELECT id FROM account_roles WHERE name='default'").fetchone()
             if grow:
-                cursor.execute("INSERT INTO user_groups(user_id, group_id) VALUES(?,?)", (uid, grow[0]))
+                cursor.execute("INSERT INTO account_role_members(user_id, group_id) VALUES(?,?)", (uid, grow[0]))
             
             conn.commit()
     except sqlite3.IntegrityError:
@@ -207,16 +158,164 @@ async def api_register(req: RegisterReq):
 
 @router.post("/login")
 async def api_login(req: LoginReq):
+    email = normalize_qq_email(req.email)
     with sqlite3.connect(AUTH_DB_PATH) as conn:
-        row = conn.execute("SELECT pw_hash, salt FROM users WHERE email=? COLLATE NOCASE", (req.email,)).fetchone()
-    if not row or hash_pw(req.password, row[1]) != row[0]:
+        row = conn.execute("SELECT id, pw_hash, salt FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone()
+    if not row or hash_pw(req.password, row[2]) != row[1]:
         raise HTTPException(401, "账号或密码错误")
-    return {"ok": True, "token": make_token(req.email.lower()), "email": req.email.lower()}
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        banned = conn.execute(
+            "SELECT 1 FROM account_restrictions WHERE user_id=? AND restriction_type='ban' AND is_active=1 LIMIT 1",
+            (row[0],),
+        ).fetchone()
+    if banned:
+        raise HTTPException(403, "账号已被平台封禁")
+    return {"ok": True, "token": make_token(email), "email": email}
+
+
+@router.get("/me")
+async def api_me(current_user_id: int = Depends(deps.get_current_user_id)):
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT id, email FROM users WHERE id = ?",
+            (current_user_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(401, "用户不存在")
+    return {"id": row[0], "email": row[1]}
+
+
+@router.get("/bootstrap-status")
+async def api_bootstrap_status():
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        has_platform_admin = _has_platform_admin(conn)
+    return {
+        "bootstrap_required": not has_platform_admin,
+        "has_platform_admin": has_platform_admin,
+        "bootstrap_token_configured": bool(BOOTSTRAP_TOKEN),
+    }
+
+
+@router.post("/bootstrap-send-code")
+async def api_bootstrap_send_code(req: SendCodeReq, request: Request, bootstrap_token: str):
+    email = normalize_qq_email(req.email)
+
+    _check_bootstrap_token(bootstrap_token)
+    client_ip = request.client.host if request.client else "unknown"
+    _check_send_guard(email, "bootstrap", client_ip)
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        _ensure_bootstrap_open(conn)
+        if conn.execute("SELECT 1 FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone():
+            raise HTTPException(409, "该邮箱已注册，不能用于首次平台初始化")
+
+    salt = secrets.token_hex(16)
+    pw_hash = hash_pw(req.password, salt)
+    code = str(secrets.randbelow(900000) + 100000)
+    key = f"bootstrap:{email}"
+    _pending[key] = {
+        "code": code,
+        "expires_at": time.time() + 300,
+        "pw_hash": pw_hash,
+        "salt": salt,
+    }
+
+    try:
+        await send_email_code(email, code)
+    except Exception as e:
+        raise HTTPException(500, f"邮件发送失败：{e}")
+
+    _record_send_guard(email, "bootstrap", client_ip)
+    return {"ok": True}
+
+
+@router.post("/bootstrap-register")
+async def api_bootstrap_register(req: RegisterReq, bootstrap_token: str):
+    _check_bootstrap_token(bootstrap_token)
+    email = normalize_qq_email(req.email)
+    key = f"bootstrap:{email}"
+    p = _pending.get(key)
+    if not p or time.time() > p["expires_at"]:
+        raise HTTPException(400, "验证码无效或已过期")
+    if p["code"] != req.code.strip():
+        raise HTTPException(400, "验证码错误")
+
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            _ensure_bootstrap_open(conn)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO users(email, pw_hash, salt, created_at) VALUES(?,?,?,?)",
+                (email, p["pw_hash"], p["salt"], int(time.time()))
+            )
+            uid = cursor.lastrowid
+
+            grow = cursor.execute("SELECT id FROM account_roles WHERE name='default'").fetchone()
+            if grow:
+                cursor.execute("INSERT INTO account_role_members(user_id, group_id) VALUES(?,?)", (uid, grow[0]))
+
+            now = int(time.time())
+            cursor.execute(
+                "INSERT INTO platform_members (user_id, is_platform_admin, permissions, created_at, updated_at) VALUES (?, 1, NULL, ?, ?)",
+                (uid, now, now),
+            )
+            conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "邮箱占用")
+
+    _pending.pop(key, None)
+    return {"ok": True, "token": make_token(email), "email": email}
+
+
+@router.post("/bootstrap-platform-admin")
+async def api_bootstrap_platform_admin(
+    req: BootstrapPlatformAdminReq,
+    current_user_id: int = Depends(deps.get_current_user_id),
+):
+    if not BOOTSTRAP_TOKEN:
+        raise HTTPException(503, "服务端未配置平台初始化令牌")
+    if not req.bootstrap_token or req.bootstrap_token.strip() != BOOTSTRAP_TOKEN:
+        raise HTTPException(403, "初始化令牌无效")
+
+    with sqlite3.connect(AUTH_DB_PATH) as conn:
+        if _has_platform_admin(conn):
+            raise HTTPException(409, "平台已存在管理员，无需再执行初始化")
+
+        user = conn.execute(
+            "SELECT id, email FROM users WHERE id = ?",
+            (current_user_id,),
+        ).fetchone()
+        if not user:
+            raise HTTPException(404, "当前用户不存在")
+
+        existing = conn.execute(
+            "SELECT id FROM platform_members WHERE user_id = ?",
+            (current_user_id,),
+        ).fetchone()
+
+        now = int(time.time())
+        if existing:
+            conn.execute(
+                "UPDATE platform_members SET is_platform_admin = 1, updated_at = ? WHERE user_id = ?",
+                (now, current_user_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO platform_members (user_id, is_platform_admin, permissions, created_at, updated_at) VALUES (?, 1, NULL, ?, ?)",
+                (current_user_id, now, now),
+            )
+
+        conn.commit()
+        return {
+            "ok": True,
+            "email": user[1],
+            "message": "平台超级管理员初始化完成",
+        }
 
 # ── 忘记密码：发送重置验证码 ────────────────────────────────────
 @router.post("/reset-send-code")
 async def api_reset_send_code(req: ResetSendCodeReq, request: Request):
-    key = req.email.lower()
+    key = normalize_qq_email(req.email)
     client_ip = request.client.host if request.client else "unknown"
     _check_send_guard(key, "reset", client_ip)
     
@@ -233,7 +332,7 @@ async def api_reset_send_code(req: ResetSendCodeReq, request: Request):
     }
 
     try:
-        await send_email_code(req.email, code)
+        await send_email_code(key, code)
     except Exception as e:
         raise HTTPException(500, f"邮件发送失败：{e}")
 
@@ -243,7 +342,7 @@ async def api_reset_send_code(req: ResetSendCodeReq, request: Request):
 # ── 忘记密码：验证码校验 + 重置密码 ────────────────────────────
 @router.post("/reset-confirm")
 async def api_reset_confirm(req: ResetConfirmReq):
-    key = req.email.lower()
+    key = normalize_qq_email(req.email)
     pending_key = f"reset:{key}"
     p = _pending.get(pending_key)
     

@@ -1,15 +1,14 @@
 <template>
   <div class="servers-page">
-    <!-- 页头 -->
-    <div class="page-header">
-      <h1 class="page-title">服务器</h1>
+    <PageHeader title="服务器列表" heading-tag="h1">
+      <template #actions>
       <button v-if="activeTab === 'mine'" class="btn btn-primary" @click="openClaimModal">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         添加服务器
       </button>
-    </div>
+      </template>
+    </PageHeader>
 
-    <!-- Tab 导航 -->
     <div class="tab-bar">
       <button :class="['tab-btn', activeTab === 'public' && 'active']" @click="activeTab = 'public'">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
@@ -28,17 +27,19 @@
       </button>
     </div>
 
-    <!-- 加载中 -->
-    <div v-if="loading" class="loading-state">加载中...</div>
+    <div v-if="loading" class="loading-state">加载中</div>
 
     <template v-else>
-      <!-- ═══ 公共频道 ═══ -->
-      <div v-if="activeTab === 'public'">
-        <!-- 搜索栏 -->
-        <div class="search-bar">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input v-model="publicSearch" placeholder="搜索服务器名称或描述…" class="search-input" />
-          <button v-if="publicSearch" class="search-clear" @click="publicSearch = ''">&#x2715;</button>
+      <section v-if="activeTab === 'public'" class="server-section">
+        <div class="section-head">
+          <span>{{ filteredPublicServers.length }} 台服务器</span>
+        </div>
+        <div class="section-toolbar">
+          <div class="search-bar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input v-model="publicSearch" placeholder="搜索服务器名称或描述" class="search-input" />
+            <button v-if="publicSearch" class="search-clear" @click="publicSearch = ''">&#x2715;</button>
+          </div>
         </div>
         <div v-if="filteredPublicServers.length" class="server-grid">
           <div v-for="s in filteredPublicServers" :key="s.id" class="server-card public-card">
@@ -54,12 +55,15 @@
               <span class="meta-chip">{{ s.member_count }} 名成员</span>
             </div>
             <div class="card-footer-row">
-              <button class="btn btn-sm btn-outline" @click="openInfoModal(s)">详情</button>
-              <button
-                class="btn btn-sm btn-primary"
-                :disabled="isAlreadyMember(s.id)"
-                @click="joinPublicServer(s)"
-              >{{ isAlreadyMember(s.id) ? '已加入' : '加入' }}</button>
+              <span class="meta-text">公开服务器</span>
+              <div class="card-actions">
+                <button class="btn btn-sm btn-outline" @click="openInfoModal(s)">详情</button>
+                <button
+                  class="btn btn-sm btn-primary"
+                  :disabled="isAlreadyMember(s.id)"
+                  @click="joinPublicServer(s)"
+                >{{ isAlreadyMember(s.id) ? '已加入' : '申请加入' }}</button>
+              </div>
             </div>
           </div>
         </div>
@@ -71,60 +75,36 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           </div>
           <p>暂无公开服务器</p>
-          <p class="empty-hint">服主可在添加服务器时开启「公开」选项，让其他玩家能在这里找到并加入。</p>
         </div>
-      </div>
+      </section>
 
-      <!-- ═══ 我的服务器 ═══ -->
-      <div v-else-if="activeTab === 'mine'">
-        <!-- 引导空白页 -->
-        <div v-if="!myOwnedServers.length" class="onboarding-empty">
-          <div class="onboard-hero">
-            <div class="onboard-icon-wrap">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-            </div>
-            <h2>开始你的第一台服务器</h2>
-            <p class="onboard-sub">将 TShock Agent 插件安装到你的服务器，就可以在这里远程管理了。</p>
-          </div>
-          <div class="steps">
-            <div class="step">
-              <div class="step-num">1</div>
-              <div class="step-body">
-                <strong>安装并启动 Agent 插件</strong>
-                <p>将 <code>TerrariaAgent.dll</code> 放入 TShock 的 <code>ServerPlugins/</code> 目录，启动服务器。</p>
-              </div>
-            </div>
-            <div class="step step-arrow">→</div>
-            <div class="step">
-              <div class="step-num">2</div>
-              <div class="step-body">
-                <strong>复制控制台中的 Agent Key</strong>
-                <p>插件首次运行会在控制台输出密钥框，复制其中的 <code>Agent Key</code>。</p>
-              </div>
-            </div>
-            <div class="step step-arrow">→</div>
-            <div class="step">
-              <div class="step-num">3</div>
-              <div class="step-body">
-                <strong>填写表单完成绑定</strong>
-                <p>点击上方「添加服务器」，填入密钥和名称，即成为该服务器的管理员。</p>
-              </div>
-            </div>
-          </div>
-          <button class="btn btn-primary btn-lg" @click="openClaimModal">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            添加我的第一台服务器
-          </button>
+      <section v-else-if="activeTab === 'mine'" class="server-section">
+        <div class="section-head">
+          <span>{{ filteredMineServers.length }} 台服务器</span>
         </div>
 
-        <!-- 已有服务器列表 -->
-        <div v-else>
-          <div class="search-bar">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input v-model="mineSearch" placeholder="搜索服务器名称…" class="search-input" />
-            <button v-if="mineSearch" class="search-clear" @click="mineSearch = ''">&#x2715;</button>
+        <div v-if="!myOwnedServers.length" class="empty-tab">
+          <div class="empty-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </div>
-          <div v-if="!filteredMineServers.length && mineSearch" class="empty-tab" style="padding:40px 0">
+          <p>暂无我的服务器</p>
+          <div class="empty-actions">
+            <button class="btn btn-primary" @click="openClaimModal">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              添加服务器
+            </button>
+          </div>
+        </div>
+
+        <template v-else>
+          <div class="section-toolbar">
+            <div class="search-bar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input v-model="mineSearch" placeholder="搜索服务器名称" class="search-input" />
+              <button v-if="mineSearch" class="search-clear" @click="mineSearch = ''">&#x2715;</button>
+            </div>
+          </div>
+          <div v-if="!filteredMineServers.length && mineSearch" class="empty-tab empty-tab-sm">
             <p>没有匹配「{{ mineSearch }}」的服务器</p>
           </div>
           <div v-else class="server-grid">
@@ -136,50 +116,59 @@
               <div class="card-header-row">
                 <span class="server-name">{{ s.name }}</span>
                 <div class="card-badges">
-                  <span class="role-tag">Owner</span>
+                  <span class="role-tag">服主</span>
                   <span :class="['online-badge', s.online ? 'online' : 'offline']">
                     {{ s.online ? '在线' : '离线' }}
                   </span>
-                  <span v-if="s.is_public" class="badge-public">公开</span>
+                  <span v-if="s.platform_status === 'suspended'" class="badge-danger">已下架</span>
+                  <span v-else-if="s.platform_audit_status === 'pending'" class="badge-pending">待平台审核</span>
+                  <span v-else-if="s.platform_is_public" class="badge-public">公开</span>
+                  <span v-else-if="s.is_public" class="badge-pending">公开待放行</span>
                 </div>
               </div>
               <div class="server-desc">{{ s.description || '暂无描述' }}</div>
               <div class="card-footer-row">
                 <span class="meta-text">{{ s.member_count }} 名成员</span>
-                <div style="display:flex;gap:6px;">
+                <div class="card-actions">
                   <button
-                    v-if="s.agent_key && activeServerKey !== s.agent_key"
+                    v-if="s.agent_key && activeServerKey !== s.agent_key && s.platform_status !== 'suspended'"
                     class="btn btn-sm btn-primary"
                     @click.stop="switchToServer(s)"
                   >切换</button>
                   <span v-else-if="s.agent_key && activeServerKey === s.agent_key" class="badge-active">当前</span>
                   <button class="btn btn-sm btn-outline" @click.stop="openEditModal(s)">设置</button>
+                  <button class="btn btn-sm btn-danger" @click.stop="handleDissolve(s)">解散</button>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
+        </template>
+      </section>
 
-      <!-- ═══ 我加入的 ═══ -->
-      <div v-else-if="activeTab === 'joined'">
+      <section v-else-if="activeTab === 'joined'" class="server-section">
+        <div class="section-head">
+          <span>{{ filteredJoinedServers.length }} 台服务器</span>
+          <button v-if="myJoinedServers.length" class="btn btn-outline" @click="openApplyByIdModal">申请未公开服务器</button>
+        </div>
         <div v-if="!myJoinedServers.length" class="empty-tab">
           <div class="empty-icon-wrap">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           </div>
-          <p>还没有加入任何服务器</p>
-          <p class="empty-hint">去「公共频道」找找看，或让服主将服务器设为公开。</p>
-          <button class="btn btn-secondary" style="margin-top:14px" @click="activeTab = 'public'">
-            浏览公共频道
-          </button>
+          <p>暂无加入的服务器</p>
+          <div class="empty-actions">
+            <button class="btn btn-secondary" @click="activeTab = 'public'">浏览公共频道</button>
+            <button class="btn btn-outline" @click="openApplyByIdModal">申请未公开服务器</button>
+          </div>
         </div>
-        <div v-else>
+        <template v-else>
+          <div class="section-toolbar">
           <div class="search-bar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input v-model="joinedSearch" placeholder="搜索服务器名称…" class="search-input" />
-            <button v-if="joinedSearch" class="search-clear" @click="joinedSearch = ''">&#x2715;</button>
+              <input v-model="joinedSearch" placeholder="搜索服务器名称" class="search-input" />
+              <button v-if="joinedSearch" class="search-clear" @click="joinedSearch = ''">&#x2715;</button>
           </div>
-          <div v-if="!filteredJoinedServers.length && joinedSearch" class="empty-tab" style="padding:40px 0">
+          </div>
+          <div v-if="!filteredJoinedServers.length && joinedSearch" class="empty-tab empty-tab-sm">
             <p>没有匹配「{{ joinedSearch }}」的服务器</p>
           </div>
           <div v-else class="server-grid">
@@ -191,18 +180,19 @@
               <div class="card-header-row">
                 <span class="server-name">{{ s.name }}</span>
                 <div class="card-badges">
-                  <span class="role-tag member">Member</span>
+                  <span class="role-tag member">成员</span>
                   <span :class="['online-badge', s.online ? 'online' : 'offline']">
                     {{ s.online ? '在线' : '离线' }}
                   </span>
+                  <span v-if="s.platform_status === 'suspended'" class="badge-danger">已下架</span>
                 </div>
               </div>
               <div class="server-desc">{{ s.description || '暂无描述' }}</div>
               <div class="card-footer-row">
                 <span class="meta-text">{{ s.member_count }} 名成员</span>
-                <div style="display:flex;gap:6px;">
+                <div class="card-actions">
                   <button
-                    v-if="s.agent_key && activeServerKey !== s.agent_key"
+                    v-if="s.agent_key && activeServerKey !== s.agent_key && s.platform_status !== 'suspended'"
                     class="btn btn-sm btn-primary"
                     @click.stop="switchToServer(s)"
                   >切换</button>
@@ -211,8 +201,8 @@
               </div>
             </div>
           </div>
-        </div>
-      </div>
+        </template>
+      </section>
     </template>
 
     <!-- 服务器详情弹窗 -->
@@ -220,8 +210,10 @@
       <div class="modal modal-detail">
         <div class="modal-info-header">
           <h3 class="modal-title">{{ detailModal.data?.name }}</h3>
-          <div style="display:flex;gap:6px;align-items:center">
-            <span v-if="detailModal.data?.is_public" class="badge-public">公开</span>
+          <div class="modal-badges">
+            <span v-if="detailModal.data?.platform_status === 'suspended'" class="badge-danger">已下架</span>
+            <span v-else-if="detailModal.data?.platform_is_public" class="badge-public">公开</span>
+            <span v-else-if="detailModal.data?.is_public" class="badge-pending">公开待放行</span>
             <span :class="['online-badge', detailModal.data?.online ? 'online' : 'offline']">
               {{ detailModal.data?.online ? '在线' : '离线' }}
             </span>
@@ -263,7 +255,7 @@
             </div>
           </div>
         </template>
-        <p v-if="detailModal.isOwner" class="detail-hint" style="margin:8px 0 16px">成员管理请前往「用户管理」</p>
+        <p v-if="detailModal.isOwner" class="detail-hint">成员管理请前往「用户管理」</p>
         <div class="modal-footer">
           <button class="btn btn-secondary" @click="detailModal.open = false">关闭</button>
           <template v-if="detailModal.isOwner">
@@ -279,7 +271,6 @@
     <div v-if="claimModal.open" class="modal-overlay" @click.self="claimModal.open = false">
       <div class="modal modal-wide">
         <h3 class="modal-title">添加服务器</h3>
-        <p class="modal-tip">将控制台中显示的 <code>Agent Key</code> 填入下方，即可绑定并成为服务器管理员。</p>
         <label class="modal-label">Agent Key <span class="required">*</span></label>
         <input v-model="claimModal.key" class="modal-input" placeholder="粘贴来自控制台的 key" maxlength="100" />
         <label class="modal-label">服务器名称 <span class="required">*</span></label>
@@ -302,19 +293,28 @@
         </div>
         <div class="modal-toggle-row">
           <label class="srv-toggle-wrap">
-            <label class="srv-toggle">
+            <span class="srv-toggle">
               <input type="checkbox" v-model="claimModal.isPublic" />
               <span class="srv-toggle-track"><span class="srv-toggle-thumb"></span></span>
-            </label>
-            <span class="srv-toggle-text">公开此服务器（显示在公共频道，其他玩家可自由加入）</span>
+            </span>
+            <span class="srv-toggle-text">公开此服务器（显示在公共频道，玩家可发起加入申请）</span>
           </label>
         </div>
         <div class="modal-toggle-row">
           <label class="srv-toggle-wrap">
-            <label class="srv-toggle">
+            <span class="srv-toggle">
+              <input type="checkbox" v-model="claimModal.joinRequiresApproval" />
+              <span class="srv-toggle-track"><span class="srv-toggle-thumb"></span></span>
+            </span>
+            <span class="srv-toggle-text">加入申请需要人工审核</span>
+          </label>
+        </div>
+        <div class="modal-toggle-row">
+          <label class="srv-toggle-wrap">
+            <span class="srv-toggle">
               <input type="checkbox" v-model="claimModal.showIp" />
               <span class="srv-toggle-track"><span class="srv-toggle-thumb"></span></span>
-            </label>
+            </span>
             <span class="srv-toggle-text">在公开介绍中显示 IP 地址</span>
           </label>
         </div>
@@ -322,7 +322,7 @@
         <div class="modal-footer">
           <button class="btn btn-secondary" @click="claimModal.open = false">取消</button>
           <button class="btn btn-primary" :disabled="claimModal.loading" @click="submitClaim">
-            {{ claimModal.loading ? '绑定中...' : '确认绑定' }}
+            {{ claimModal.loading ? '绑定中' : '确认绑定' }}
           </button>
         </div>
       </div>
@@ -375,7 +375,23 @@
             class="btn btn-primary"
             :disabled="isAlreadyMember(infoModal.server?.id)"
             @click="joinFromInfo">
-            {{ isAlreadyMember(infoModal.server?.id) ? '已加入' : '加入服务器' }}
+            {{ isAlreadyMember(infoModal.server?.id) ? '已加入' : '申请加入' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 申请未公开服务器弹窗 -->
+    <div v-if="applyByIdModal.open" class="modal-overlay" @click.self="applyByIdModal.open = false">
+      <div class="modal modal-info">
+        <h3 class="modal-title">申请未公开服务器</h3>
+        <label class="modal-label">服务器编号 <span class="required">*</span></label>
+        <input v-model.trim="applyByIdModal.serverCode" class="modal-input" type="text" maxlength="32" placeholder="例如：A1B2C3D4E5F6" />
+        <p v-if="applyByIdModal.error" class="modal-error">{{ applyByIdModal.error }}</p>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" @click="applyByIdModal.open = false">取消</button>
+          <button class="btn btn-primary" :disabled="applyByIdModal.loading" @click="submitApplyById">
+            {{ applyByIdModal.loading ? '提交中' : '提交申请' }}
           </button>
         </div>
       </div>
@@ -405,19 +421,28 @@
         </div>
         <div class="modal-toggle-row">
           <label class="srv-toggle-wrap">
-            <label class="srv-toggle">
+            <span class="srv-toggle">
               <input type="checkbox" v-model="editModal.isPublic" />
               <span class="srv-toggle-track"><span class="srv-toggle-thumb"></span></span>
-            </label>
-            <span class="srv-toggle-text">公开此服务器（显示在公共频道，其他玩家可加入）</span>
+            </span>
+            <span class="srv-toggle-text">公开此服务器（显示在公共频道，玩家可发起加入申请）</span>
           </label>
         </div>
         <div class="modal-toggle-row">
           <label class="srv-toggle-wrap">
-            <label class="srv-toggle">
+            <span class="srv-toggle">
+              <input type="checkbox" v-model="editModal.joinRequiresApproval" />
+              <span class="srv-toggle-track"><span class="srv-toggle-thumb"></span></span>
+            </span>
+            <span class="srv-toggle-text">加入申请需要人工审核</span>
+          </label>
+        </div>
+        <div class="modal-toggle-row">
+          <label class="srv-toggle-wrap">
+            <span class="srv-toggle">
               <input type="checkbox" v-model="editModal.showIp" />
               <span class="srv-toggle-track"><span class="srv-toggle-thumb"></span></span>
-            </label>
+            </span>
             <span class="srv-toggle-text">在公开介绍中显示 IP 地址</span>
           </label>
         </div>
@@ -425,7 +450,7 @@
         <div class="modal-footer">
           <button class="btn btn-secondary" @click="editModal.open = false">取消</button>
           <button class="btn btn-primary" :disabled="editModal.loading" @click="submitEdit">
-            {{ editModal.loading ? '保存中...' : '保存修改' }}
+            {{ editModal.loading ? '保存中' : '保存修改' }}
           </button>
         </div>
       </div>
@@ -437,8 +462,10 @@
 import { ref, computed, onMounted, inject, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getEmail } from '@/api/auth'
+import { useFeedback } from '@/composables/useFeedback'
+import PageHeader from '@/components/PageHeader.vue'
 import {
-  claimServer, joinServer, listServers, listPublicServers,
+  claimServer, applyJoinServer, applyJoinServerByCode, listServers, listPublicServers,
   getServer, leaveServer, kickMember, dissolveServer, updateServer
 } from '@/api/servers'
 
@@ -448,6 +475,7 @@ const layoutServers       = inject('myServers', ref([]))
 const activeServerKey     = inject('activeServerKey', ref(''))
 const route  = useRoute()
 const router = useRouter()
+const { toast, dialog } = useFeedback()
 
 function normalizeAgentKey(v) {
   return String(v || '').trim()
@@ -481,7 +509,6 @@ function normalizeTab(tab) {
 }
 
 const activeTab = ref(normalizeTab(route.query.tab))
-
 // ── 基础状态 ─────────────────────────────────────────────────
 const myServers     = ref([])   // 我参与的服务器（owner + member）
 const publicServers = ref([])   // 公共服务器列表
@@ -504,9 +531,10 @@ const filteredJoinedServers = computed(() => {
   return myJoinedServers.value.filter(s => s.name.toLowerCase().includes(q))
 })
 
-const claimModal = ref({ open: false, key: '', name: '', desc: '', isPublic: false, showIp: true, game_ip: '', game_port: null, qq_group: '', error: '', loading: false })
+const claimModal = ref({ open: false, key: '', name: '', desc: '', isPublic: false, joinRequiresApproval: false, showIp: true, game_ip: '', game_port: null, qq_group: '', error: '', loading: false })
 const infoModal  = ref({ open: false, server: null })
-const editModal  = ref({ open: false, id: null, name: '', desc: '', isPublic: false, showIp: true, game_ip: '', game_port: null, qq_group: '', error: '', loading: false })
+const editModal  = ref({ open: false, id: null, name: '', desc: '', isPublic: false, joinRequiresApproval: false, showIp: true, game_ip: '', game_port: null, qq_group: '', error: '', loading: false })
+const applyByIdModal = ref({ open: false, serverCode: '', error: '', loading: false })
 
 // 公共频道搜索
 const publicSearch = ref('')
@@ -588,7 +616,9 @@ function openEditModal(s) {
   editModal.value = {
     open: true, id: s.id,
     name: s.name, desc: s.description || '',
-    isPublic: s.is_public, showIp: s.show_ip ?? true,
+    isPublic: s.is_public,
+    joinRequiresApproval: !!s.join_requires_approval,
+    showIp: s.show_ip ?? true,
     game_ip: s.game_ip || '', game_port: s.game_port || null,
     qq_group: s.qq_group || '',
     error: '', loading: false,
@@ -600,10 +630,11 @@ async function submitEdit() {
   editModal.value.loading = true
   editModal.value.error = ''
   try {
-    await updateServer(editModal.value.id, {
+    const result = await updateServer(editModal.value.id, {
       name:         editModal.value.name.trim(),
       description:  editModal.value.desc,
       is_public:    editModal.value.isPublic,
+      join_requires_approval: editModal.value.joinRequiresApproval,
       show_ip:      editModal.value.showIp,
       game_ip:      editModal.value.game_ip,
       game_port:    editModal.value.game_port || null,
@@ -612,6 +643,9 @@ async function submitEdit() {
     editModal.value.open = false
     await loadAll()
     if (globalReloadServers) await globalReloadServers()
+    if (editModal.value.isPublic && result?.platform_audit_status === 'pending' && !result?.platform_is_public) {
+      toast.success('公开申请已提交平台审核，审核通过前不会出现在公共频道。')
+    }
   } catch(e) {
     editModal.value.error = e.message
   } finally {
@@ -621,6 +655,10 @@ async function submitEdit() {
 
 // ── 切换当前服务器 ────────────────────────────────────────────
 function switchToServer(s) {
+  if (s.platform_status === 'suspended') {
+    toast.warning('该服务器已被平台下架，暂不能切换使用。')
+    return
+  }
   activeServerKey.value = s.agent_key
   localStorage.setItem('active_agent_key', s.agent_key)
 }
@@ -642,7 +680,20 @@ function copyText(text, key) {
 }
 // ── 认领 ─────────────────────────────────────────────────────
 function openClaimModal() {
-  Object.assign(claimModal.value, { open: true, key: '', name: '', desc: '', isPublic: false, showIp: true, game_ip: '', game_port: null, qq_group: '', error: '', loading: false })
+  Object.assign(claimModal.value, {
+    open: true,
+    key: '',
+    name: '',
+    desc: '',
+    isPublic: false,
+    joinRequiresApproval: false,
+    showIp: true,
+    game_ip: '',
+    game_port: null,
+    qq_group: '',
+    error: '',
+    loading: false,
+  })
 }
 
 async function submitClaim() {
@@ -653,19 +704,21 @@ async function submitClaim() {
   claimModal.value.loading = true
   claimModal.value.error = ''
   try {
-    await claimServer(
+    const result = await claimServer(
       claimModal.value.key, claimModal.value.name,
       claimModal.value.desc, claimModal.value.isPublic,
       {
         game_ip:  claimModal.value.game_ip,
         game_port: claimModal.value.game_port || null,
         qq_group: claimModal.value.qq_group,
+        join_requires_approval: claimModal.value.joinRequiresApproval,
         show_ip:  claimModal.value.showIp,
       }
     )
     claimModal.value.open = false
     await loadAll()
     if (globalReloadServers) await globalReloadServers()
+    toast.success(claimSuccessMessage(result, claimModal.value.isPublic), { duration: 5200 })
   } catch(e) {
     claimModal.value.error = e.message
   } finally {
@@ -673,47 +726,139 @@ async function submitClaim() {
   }
 }
 
+function claimSuccessMessage(server, requestedPublic) {
+  const pendingAudit = server?.platform_audit_status === 'pending'
+  const waitingOnline = server?.platform_status === 'inactive'
+  const waitingPublic = requestedPublic && !server?.platform_is_public
+  if (pendingAudit || waitingOnline || waitingPublic) {
+    const parts = ['服务器已绑定成功，并已提交平台审核。']
+    if (waitingOnline) parts.push('审核通过前，该服务器暂不能上线。')
+    if (waitingPublic) parts.push('审核通过前，该服务器不会出现在公共频道。')
+    parts.push('平台审核完成后会自动更新状态。')
+    return parts.join('\n')
+  }
+  return '服务器已绑定成功'
+}
+
 // ── 加入公共服务器 ────────────────────────────────────────────
 async function joinPublicServer(s) {
   if (isAlreadyMember(s.id)) return
-  if (!confirm(`确定加入「${s.name}」吗？`)) return
+  const ok = await dialog.confirm({
+    title: '提交入服申请',
+    message: `向「${s.name}」提交加入申请？`,
+    confirmText: '提交申请',
+  })
+  if (!ok) return
   try {
-    await joinServer(s.id)
+    const result = await applyJoinServer(s.id, '')
+    if (result?.auto_rejected) {
+      toast.error(`申请被拒绝：${result.reject_reason || '该账号存在黑名单记录'}`, { duration: 5200 })
+      return
+    }
     await loadAll()
     if (globalReloadServers) await globalReloadServers()
-    activeTab.value = 'joined'
+    if (result?.status === 'approved') {
+      toast.success('申请已自动通过，你已加入该服务器')
+      activeTab.value = 'joined'
+      return
+    }
+    toast.success('申请已提交，等待管理员审批')
   } catch(e) {
-    alert(e.message)
+    toast.error(e.message)
+  }
+}
+
+function openApplyByIdModal() {
+  applyByIdModal.value = {
+    open: true,
+    serverCode: '',
+    error: '',
+    loading: false,
+  }
+}
+
+async function submitApplyById() {
+  const serverCode = String(applyByIdModal.value.serverCode || '').trim()
+  if (!serverCode) {
+    applyByIdModal.value.error = '请填写服务器编号'
+    return
+  }
+  applyByIdModal.value.loading = true
+  applyByIdModal.value.error = ''
+  try {
+    const result = await applyJoinServerByCode(serverCode)
+    if (result?.auto_rejected) {
+      applyByIdModal.value.open = false
+      toast.error(`申请被拒绝：${result.reject_reason || '该账号存在黑名单记录'}`, { duration: 5200 })
+      return
+    }
+    applyByIdModal.value.open = false
+    await loadAll()
+    if (globalReloadServers) await globalReloadServers()
+    if (result?.status === 'approved') {
+      toast.success('申请已自动通过，你已加入该服务器')
+      activeTab.value = 'joined'
+      return
+    }
+    toast.success('申请已提交，等待管理员审批')
+  } catch (e) {
+    applyByIdModal.value.error = e.message || '申请提交失败'
+  } finally {
+    applyByIdModal.value.loading = false
   }
 }
 
 // ── 离开 / 解散 / 踢人 ───────────────────────────────────────
 async function handleLeave() {
-  if (!confirm('确定要离开该服务器吗？')) return
+  const ok = await dialog.confirm({
+    title: '离开服务器',
+    message: '确定要离开该服务器吗？离开后该服务器下的角色绑定将被删除。',
+    confirmText: '离开',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await leaveServer(detailModal.value.data.id)
     detailModal.value.open = false
     await loadAll()
     if (globalReloadServers) await globalReloadServers()
-  } catch(e) { alert(e.message) }
+  } catch(e) { toast.error(e.message) }
 }
 
-async function handleDissolve() {
-  if (!confirm('确定要解散该服务器吗？此操作不可撤销')) return
+async function handleDissolve(server = null) {
+  const target = server || detailModal.value.data
+  if (!target?.id) return
+  const ok = await dialog.confirm({
+    title: '解散服务器',
+    message: `确定要解散「${target.name || '该服务器'}」吗？此操作不可撤销。`,
+    confirmText: '解散',
+    danger: true,
+  })
+  if (!ok) return
   try {
-    await dissolveServer(detailModal.value.data.id)
+    await dissolveServer(target.id)
     detailModal.value.open = false
+    if (target.agent_key && activeServerKey.value === target.agent_key) {
+      activeServerKey.value = ''
+      localStorage.removeItem('active_agent_key')
+    }
     await loadAll()
     if (globalReloadServers) await globalReloadServers()
-  } catch(e) { alert(e.message) }
+  } catch(e) { toast.error(e.message) }
 }
 
 async function handleKick(userId) {
-  if (!confirm('确定踢出该用户吗？')) return
+  const ok = await dialog.confirm({
+    title: '踢出成员',
+    message: '确定踢出该用户吗？',
+    confirmText: '踢出',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await kickMember(detailModal.value.data.id, userId)
     detailModal.value.data = await getServer(detailModal.value.data.id)
-  } catch(e) { alert(e.message) }
+  } catch(e) { toast.error(e.message) }
 }
 
 onMounted(loadAll)
@@ -743,15 +888,6 @@ watch(activeTab, (tab) => {
   box-sizing: border-box;
   overflow-y: auto;
 }
-
-/* ── 页头 ── */
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 18px;
-}
-.page-title { font-size: 1.4rem; font-weight: 700; color: #1e293b; margin: 0; }
 
 /* ── Tab 导航 ── */
 .tab-bar {
@@ -878,6 +1014,13 @@ watch(activeTab, (tab) => {
   font-size: 0.72rem; font-weight: 500;
   background: #fef3c7; color: #d97706;
 }
+.badge-pending,
+.badge-danger {
+  padding: 2px 7px; border-radius: 20px;
+  font-size: 0.72rem; font-weight: 500;
+}
+.badge-pending { background: #fffbeb; color: #b45309; }
+.badge-danger { background: #fee2e2; color: #991b1b; }
 
 /* ── 空状态 ── */
 .empty-tab {
@@ -1058,6 +1201,18 @@ watch(activeTab, (tab) => {
 .search-clear { background: none; border: none; cursor: pointer; color: #94a3b8; font-size: 14px; padding: 0 2px; line-height: 1; }
 .search-clear:hover { color: #64748b; }
 
+.joined-tools {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.joined-search {
+  margin-bottom: 0;
+  flex: 1;
+}
+
 /* ── 已加入的"当前"标记 ── */
 .badge-active {
   padding: 2px 7px; border-radius: 20px;
@@ -1068,4 +1223,748 @@ watch(activeTab, (tab) => {
 
 /* ── 服务器详情弹窗 ── */
 .modal-detail { width: 480px; }
+
+/* ── Docs UI alignment ── */
+.servers-page {
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  color: #0f172a;
+}
+
+.tab-bar {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  margin: 14px 24px 0;
+  padding: 4px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.tab-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-btn:hover {
+  color: #1d4ed8;
+  background: #f8fafc;
+}
+
+.tab-btn.active {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.tab-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tab-count {
+  padding: 1px 6px;
+  border: 1px solid #bfdbfe;
+  border-radius: 20px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.server-section {
+  margin: 14px 24px 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.section-head {
+  min-height: 48px;
+  padding: 12px 16px;
+  background: #f8fafc;
+  border-bottom: 1px solid #f1f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-head span {
+  display: inline-flex;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.section-toolbar {
+  padding: 14px 16px 0;
+}
+
+.search-bar {
+  width: min(520px, 100%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.search-bar:focus-within {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.search-bar svg {
+  width: 14px;
+  height: 14px;
+  stroke: #94a3b8;
+}
+
+.search-input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.search-input::placeholder {
+  color: #94a3b8;
+}
+
+.search-clear {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.search-clear:hover {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.server-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0 16px 16px;
+}
+
+.server-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.server-card:hover,
+.public-card:hover {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+  box-shadow: none;
+}
+
+.card-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.server-name {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.card-badges,
+.modal-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.server-desc {
+  min-height: 38px;
+  margin: 0 0 10px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.card-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.meta-text {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.meta-chip,
+.online-badge,
+.role-tag,
+.badge-public,
+.badge-pending,
+.badge-danger,
+.badge-active {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.meta-chip,
+.role-tag.member {
+  border-color: #e2e8f0;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.role-tag,
+.badge-public {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.online-badge.online,
+.badge-active {
+  border-color: #bbf7d0;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.online-badge.offline {
+  border-color: #e2e8f0;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.badge-pending {
+  border-color: #fedf89;
+  background: #fffaeb;
+  color: #b54708;
+}
+
+.badge-danger {
+  border-color: #fecaca;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.btn-secondary {
+  border: 1px solid #d1d5db;
+  background: #f8fafc;
+  color: #374151;
+}
+
+.btn-outline {
+  border: 1px solid #d1d5db;
+  background: #fff;
+  color: #374151;
+}
+
+.btn-outline:hover,
+.btn-secondary:hover {
+  background: #f1f5f9;
+}
+
+.btn-danger {
+  background: #ef4444;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #dc2626;
+}
+
+.btn-sm {
+  min-height: 28px;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+.empty-tab {
+  padding: 56px 16px;
+  text-align: center;
+  color: #64748b;
+}
+
+.empty-tab-sm {
+  padding: 34px 16px;
+}
+
+.empty-tab p {
+  margin: 8px 0 0;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.empty-icon-wrap {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-icon-wrap svg {
+  width: 28px;
+  height: 28px;
+  stroke: #64748b;
+}
+
+.empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.loading-state {
+  margin: 14px 24px 24px;
+  padding: 46px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  color: #64748b;
+  font-size: 13px;
+  text-align: center;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.38);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+}
+
+.modal {
+  width: 420px;
+  max-width: 100%;
+  max-height: 90vh;
+  padding: 18px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.modal-wide {
+  width: 560px;
+}
+
+.modal-detail {
+  width: 520px;
+}
+
+.modal-info {
+  width: 440px;
+  max-width: 100%;
+}
+
+.modal-title {
+  margin: 0 0 14px;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.modal-info-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.modal-info-header .modal-title {
+  flex: 1;
+  margin: 0;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.modal-info-desc {
+  margin: 0 0 12px;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.modal-info-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.modal-row-2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.modal-label {
+  display: block;
+  margin: 0 0 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.required {
+  color: #ef4444;
+}
+
+.modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.modal-input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.modal-textarea {
+  min-height: 82px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.modal-toggle-row {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.srv-toggle-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #334155;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.srv-toggle-text {
+  padding-top: 2px;
+  line-height: 1.45;
+}
+
+.srv-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.srv-toggle input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+.srv-toggle-track {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 0.2s;
+}
+
+.srv-toggle input:checked + .srv-toggle-track {
+  background: #3b82f6;
+}
+
+.srv-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
+  transition: transform 0.2s;
+}
+
+.srv-toggle input:checked + .srv-toggle-track .srv-toggle-thumb {
+  transform: translateX(16px);
+}
+
+.modal-error {
+  margin: -2px 0 12px;
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.info-connect-block {
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.info-connect-title {
+  margin-bottom: 8px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.info-connect-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.info-connect-row:last-child {
+  margin-bottom: 0;
+}
+
+.info-connect-label {
+  min-width: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.info-connect-val {
+  min-width: 0;
+  padding: 3px 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.copy-btn {
+  flex-shrink: 0;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  color: #374151;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.copy-btn:hover {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.detail-hint {
+  display: inline-flex;
+  margin: 0 0 14px;
+  padding: 2px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .tab-bar {
+    margin: 12px 12px 0;
+    overflow-x: auto;
+  }
+
+  .server-section,
+  .loading-state {
+    margin: 12px;
+  }
+
+  .server-grid {
+    grid-template-columns: 1fr;
+    padding: 0 12px 12px;
+  }
+
+  .section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .section-toolbar {
+    padding: 12px 12px 0;
+  }
+
+  .card-footer-row,
+  .modal-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .card-actions,
+  .modal-footer .btn {
+    width: 100%;
+  }
+
+  .card-actions .btn {
+    flex: 1;
+  }
+
+  .modal-row-2,
+  .info-connect-row {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

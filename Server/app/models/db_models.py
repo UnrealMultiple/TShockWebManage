@@ -27,11 +27,15 @@ class Server(Base):
     description = Column(String(256), default="")
     # Agent 连接时携带的唯一标识，用于认领和 WS 路由
     agent_key   = Column(String(64), unique=True, nullable=False, index=True)
+    # 对外展示与申请使用的服务器编号（随机且不可预测）
+    server_code = Column(String(32), unique=True, nullable=False, index=True)
     # owner_id 为空表示服务器尚未被认领（不声明 FK，users 表由 raw sqlite3 管理）
     owner_id    = Column(Integer, nullable=True)
     created_at  = Column(Integer, nullable=False, default=lambda: int(time.time()))
-    # 公开可加入：其他用户可以在公共频道找到并加入服务器
+    # 是否在公共频道展示
     is_public   = Column(Boolean, nullable=False, default=False)
+    # 入服申请是否需要人工审核：False=自动通过，True=待审批
+    join_requires_approval = Column(Boolean, nullable=False, default=False)
 
     # 游戏连接信息
     game_ip      = Column(String(128), nullable=True, default="")
@@ -42,6 +46,19 @@ class Server(Base):
     show_ip      = Column(Boolean, nullable=False, default=True)
     # 面板功能：每个面板账号在该服务器可绑定/注册的角色总数上限（0-50，默认 1）
     register_limit = Column(Integer, nullable=False, default=1)
+    # 面板功能：云黑记录达到该数量时自动拒绝入服申请；0 表示关闭
+    blacklist_auto_reject_count = Column(Integer, nullable=False, default=0)
+    # 面板功能：玩家注册名字规则与最大长度
+    character_name_regex = Column(String(256), nullable=False, default=r"^[\u4e00-\u9fffA-Za-z0-9:/\[\]]+$")
+    character_name_max_length = Column(Integer, nullable=False, default=20)
+
+    # 平台管理功能
+    platform_status = Column(String(32), nullable=False, default="active")  # active/inactive/suspended
+    platform_audit_status = Column(String(32), nullable=False, default="pending")  # pending/approved/rejected
+    platform_audit_reason = Column(String(512), nullable=True, default=None)
+    platform_audit_by = Column(Integer, nullable=True, default=None)  # 审核人 user_id
+    platform_audit_at = Column(Integer, nullable=True, default=None)  # 审核时间戳
+    platform_is_public = Column(Boolean, nullable=False, default=False)  # 平台是否公开展示
 
     # 同机直接启动配置（后端与 TShock 在同一台机器时使用）
     local_start_enabled = Column(Boolean, nullable=False, default=False)
@@ -68,6 +85,11 @@ class ServerMember(Base):
     user_id   = Column(Integer, nullable=False)  # 指向 users.id，由 raw sqlite3 管理，不声明 FK
     role      = Column(SAEnum(ServerMemberRole), nullable=False, default=ServerMemberRole.member)
     joined_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    # 入会来源追踪：public_direct_join / invite_accepted / join_request_approved / owner_claim / legacy
+    join_source = Column(String(32), nullable=False, default="legacy")
+    join_source_ref_type = Column(String(32), nullable=True, default=None)
+    join_source_ref_id = Column(Integer, nullable=True, default=None)
+    joined_by_user_id = Column(Integer, nullable=True, default=None)
 
     server = relationship("Server", back_populates="members")
 

@@ -1,13 +1,11 @@
 <template>
   <div class="cfg-page">
     <!-- ── 顶部标题栏 ── -->
-    <div class="cfg-header">
-      <div class="cfg-header-left">
-        <h2 class="cfg-title">欢迎消息 (MOTD)</h2>
-        <span class="cfg-subtitle">motd.txt</span>
+    <PageHeader title="欢迎消息 (MOTD)" subtitle="motd.txt">
+      <template #meta>
         <span v-if="modified" class="cfg-modified-badge">● 未保存</span>
-      </div>
-      <div class="cfg-header-right">
+      </template>
+      <template #actions>
         <button class="cfg-btn cfg-btn-outline" @click="loadMotd"
           :disabled="loading || !props.agentOnline || !activeServerKey">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -37,16 +35,11 @@
           </svg>
           {{ saving ? '保存中…' : '保存' }}
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Agent 离线 -->
-    <div v-if="!props.agentOnline" class="cfg-offline">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      <span>Agent 未连接，无法读取或保存 MOTD。请先启动服务器。</span>
-    </div>
+    <AgentOfflineNotice v-if="!props.agentOnline" message="Agent 未连接，无法读取或保存 MOTD。请先启动服务器。" />
 
     <template v-else>
       <!-- 加载中 -->
@@ -122,6 +115,8 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, inject } from 'vue'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 const props = defineProps({
   agentOnline: { type: Boolean, default: false },
@@ -256,28 +251,6 @@ function showToast(ok, msg) {
   background: #f8fafc;
 }
 
-/* ── 顶部标题栏 ── */
-.cfg-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 28px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.cfg-header-left  { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.cfg-header-right { display: flex; align-items: center; gap: 8px; }
-.cfg-title        { margin: 0; font-size: 18px; font-weight: 700; color: #0f172a; }
-.cfg-subtitle {
-  font-size: 12px; color: #64748b;
-  background: #f1f5f9; border: 1px solid #e2e8f0;
-  padding: 2px 8px; border-radius: 20px; font-family: monospace;
-  max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  display: inline-block; vertical-align: middle;
-}
 .cfg-modified-badge {
   font-size: 12px; color: #d97706;
   background: #fef3c7; border: 1px solid #fde68a;
@@ -306,13 +279,11 @@ function showToast(ok, msg) {
 .cfg-btn-primary:hover:not(:disabled) { background: #2563eb; }
 
 /* ── 状态区（与 TShockConfigView 完全一致） ── */
-.cfg-offline, .cfg-loading, .cfg-error, .cfg-empty {
+.cfg-loading, .cfg-error, .cfg-empty {
   display: flex; align-items: center; justify-content: center;
   gap: 14px; padding: 60px 24px; color: #64748b;
   font-size: 14px;
 }
-.cfg-offline { flex-direction: row; }
-.cfg-offline svg { width: 24px; height: 24px; color: #94a3b8; flex-shrink: 0; }
 .cfg-error { flex-direction: row; align-items: flex-start; }
 .cfg-error svg { width: 24px; height: 24px; color: #ef4444; flex-shrink: 0; margin-top: 2px; }
 .cfg-error strong { color: #0f172a; font-size: 15px; }

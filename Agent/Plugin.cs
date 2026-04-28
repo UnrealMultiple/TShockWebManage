@@ -21,8 +21,8 @@ namespace TerrariaManagerAgent
         // 插件生命周期取消令牌（用于快速中断后台循环）
         private readonly CancellationTokenSource _pluginCts = new CancellationTokenSource();
 
-        public override string Name => "RemoteManagerAgent";
-        public override Version Version => new Version(1, 2, 1);
+        public override string Name => "TerrariaManagerAgent";
+        public override Version Version => new Version(1, 2, 2);
         public override string Author => "熙恩";
         public override string Description => "TShock 远程管理代理插件";
 
@@ -62,7 +62,8 @@ namespace TerrariaManagerAgent
                 ServerApi.Hooks.ServerLeave.Register(this, _runtimeService.OnPlayerLeave);
                 GeneralHooks.ReloadEvent += OnReload;
 
-                // 6. 初始化玩家统计追踪器
+                // 6. 初始化 Agent 本地数据库
+                AgentLocalStore.Init();
                 StatsTracker.Init();
 
                 // 7. 如果是重启后首次启动，还原启动脚本（移除临时循环）

@@ -1,5 +1,8 @@
 <template>
-  <div class="db-root">
+  <div class="db-page">
+    <PageHeader title="数据库管理" subtitle="认证库 · TShock 数据库" heading-tag="h1" />
+
+    <div class="db-root">
 
     <!-- 左侧：数据库 + 表列表 -->
     <aside class="db-sidebar">
@@ -83,6 +86,7 @@
         </div>
       </template>
     </main>
+    </div>
 
     <!-- ── 编辑行 Modal ── -->
     <div v-if="editModal" class="modal-mask" @click.self="editModal = false">
@@ -161,6 +165,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { listDatabases, listTables, queryTable, updateRow, insertRow, deleteRow } from '@/api/database'
+import PageHeader from '@/components/PageHeader.vue'
 
 // ── 数据库 + 表列表 ───────────────────────────────────────────
 const databases     = ref([])
@@ -338,10 +343,18 @@ async function submitDeleteRow() {
 </script>
 
 <style scoped>
+.db-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ── 布局 ── */
 .db-root {
   display: flex;
-  height: 100%;
+  flex: 1;
   min-height: 0;
   background: #0f172a;
   color: #e2e8f0;

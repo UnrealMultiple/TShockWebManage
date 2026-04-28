@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 class SendCodeReq(BaseModel):
     email: str
@@ -21,6 +21,9 @@ class ResetConfirmReq(BaseModel):
     email: str
     code: str
     new_password: str
+
+class BootstrapPlatformAdminReq(BaseModel):
+    bootstrap_token: str
 
 # RBAC 相关模型
 class GroupBase(BaseModel):
@@ -49,6 +52,7 @@ class ServerClaimReq(BaseModel):
     name:         str             = Field(...,        max_length=50)
     description:  Optional[str]  = Field("",         max_length=200)
     is_public:    bool = False
+    join_requires_approval: bool = False
     game_ip:      Optional[str]  = Field("",         max_length=100)
     game_port:    Optional[int]  = None
     qq_group:     Optional[str]  = Field("",         max_length=20)
@@ -56,14 +60,15 @@ class ServerClaimReq(BaseModel):
     show_ip:      bool = True
 
 class ServerJoinReq(BaseModel):
-    """加入服务器：成为普通 Member"""
-    server_id: int
+    """提交入服申请：使用服务器编号"""
+    server_code: str = Field(..., min_length=6, max_length=32)
 
 class ServerUpdateReq(BaseModel):
     """更新服务器基本信息（Owner 专属）"""
     name:         Optional[str]  = Field(None, max_length=50)
     description:  Optional[str]  = Field(None, max_length=200)
     is_public:    Optional[bool] = None
+    join_requires_approval: Optional[bool] = None
     game_ip:      Optional[str]  = Field(None, max_length=100)
     game_port:    Optional[int]  = None
     qq_group:     Optional[str]  = Field(None, max_length=20)
@@ -82,12 +87,14 @@ class ServerMemberOut(BaseModel):
 
 class ServerOut(BaseModel):
     id:          int
+    server_code: str
     name:        str
     description: str
     agent_key:   str
     owner_id:    Optional[int]
     created_at:  int
     is_public:   bool = False
+    join_requires_approval: bool = False
     online:      bool = False          # 代理端是否在线（由 WebSocket 层填充）
     member_count: int = 0
     server_role: Optional[str] = None  # 当前登录用户在该服务器的角色
@@ -100,6 +107,14 @@ class ServerOut(BaseModel):
     game_version: Optional[str] = ""
     show_ip:      bool = True
     register_limit: int = 1
+    blacklist_auto_reject_count: int = 0
+    character_name_regex: str = r"^[\u4e00-\u9fffA-Za-z0-9:/\[\]]+$"
+    character_name_max_length: int = 20
+    # 平台侧审核/展示状态
+    platform_status: str = "active"
+    platform_audit_status: str = "pending"
+    platform_audit_reason: Optional[str] = None
+    platform_is_public: bool = False
     # 同机直接启动配置
     local_start_enabled: bool = False
     local_start_path:    str  = ""
@@ -156,8 +171,120 @@ class PanelMemberGroupUpdate(BaseModel):
 
 class PanelFeatureSettingsUpdate(BaseModel):
     register_limit: int = Field(..., ge=0, le=50)
+    blacklist_auto_reject_count: int = Field(0, ge=0, le=99)
+    character_name_regex: str = Field(r"^[\u4e00-\u9fffA-Za-z0-9:/\[\]]+$", min_length=1, max_length=256)
+    character_name_max_length: int = Field(20, ge=1, le=50)
 
 
 class PanelFeatureSettingsOut(BaseModel):
     register_limit: int = Field(default=1, ge=0, le=50)
     registered_count: int = 0
+    join_requires_approval: bool = False
+    blacklist_auto_reject_count: int = 0
+    character_name_regex: str = r"^[\u4e00-\u9fffA-Za-z0-9:/\[\]]+$"
+    character_name_max_length: int = 20
+    server_code: str = ""
+
+
+class PanelMembershipInviteReq(BaseModel):
+    invitee_email: str = Field(..., max_length=128)
+    message: Optional[str] = Field("", max_length=300)
+    expires_in_hours: Optional[int] = Field(72, ge=1, le=720)
+
+
+class PanelMembershipReviewReq(BaseModel):
+    note: Optional[str] = Field("", max_length=300)
+
+
+class BlacklistCreateReq(BaseModel):
+    target_user_id: int
+    reason: Optional[str] = Field("", max_length=500)
+
+
+class CloudBlacklistReviewReq(BaseModel):
+    action: str = Field(..., max_length=16)
+    review_note: Optional[str] = Field("", max_length=500)
+
+
+# ── 消息中心 / 邀请 / 申请相关模型 ───────────────────────────────────────────────
+
+class ServerApplyReq(BaseModel):
+    message: Optional[str] = Field("", max_length=300)
+
+
+class JoinRequestReviewReq(BaseModel):
+    note: Optional[str] = Field("", max_length=300)
+
+
+class JoinRequestOut(BaseModel):
+    id: int
+    server_id: int
+    server_name: str = ""
+    server_code: str = ""
+    applicant_user_id: int
+    applicant_email: str
+    message: str = ""
+    status: str
+    reviewed_by_user_id: Optional[int] = None
+    reviewed_by_email: Optional[str] = None
+    review_note: str = ""
+    created_at: int
+    updated_at: int
+    withdrawn_at: Optional[int] = None
+    server_blacklist_count: int = 0
+    cloud_blacklist_count: int = 0
+    blacklist_flags: List[str] = []
+    blacklist_details: List[Dict[str, Any]] = []
+
+
+class ServerInviteCreateReq(BaseModel):
+    invitee_email: str = Field(..., max_length=128)
+    message: Optional[str] = Field("", max_length=300)
+    expires_in_hours: Optional[int] = Field(72, ge=1, le=720)
+
+
+class ServerInviteRespondReq(BaseModel):
+    action: str = Field(..., max_length=16)
+    note: Optional[str] = Field("", max_length=300)
+
+
+class ServerInviteOut(BaseModel):
+    id: int
+    server_id: int
+    server_name: str = ""
+    server_code: str = ""
+    inviter_user_id: int
+    inviter_email: Optional[str] = None
+    invitee_user_id: int
+    invitee_email: Optional[str] = None
+    message: str = ""
+    status: str
+    expires_at: Optional[int] = None
+    acted_at: Optional[int] = None
+    created_at: int
+    updated_at: int
+
+
+class NotificationOut(BaseModel):
+    id: int
+    receiver_user_id: int
+    sender_user_id: Optional[int] = None
+    sender_email: Optional[str] = None
+    server_id: Optional[int] = None
+    server_name: Optional[str] = None
+    type: str
+    ref_type: Optional[str] = None
+    ref_id: Optional[int] = None
+    title: str
+    content: str
+    payload_json: str = "{}"
+    created_at: int
+    read_at: Optional[int] = None
+
+
+class UserOut(BaseModel):
+    """平台用户输出模型"""
+    id: int
+    email: str
+    username: Optional[str] = None
+    is_platform_admin: bool = False

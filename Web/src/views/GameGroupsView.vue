@@ -1,8 +1,7 @@
 <template>
   <div class="gg-page">
-    <div class="page-header">
-      <h1 class="page-title">游戏权限组管理</h1>
-      <div class="page-header-right">
+    <PageHeader title="游戏权限组管理" heading-tag="h1">
+      <template #actions>
         <button class="btn btn-sm btn-outline" @click="loadGroups" :disabled="loading || !agentOnline || !activeServerKey">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;flex-shrink:0">
             <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.18"/>
@@ -25,17 +24,12 @@
           </svg>
           {{ saving ? '保存中…' : '保存' }}
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="gg-body">
       <!-- Agent 离线 -->
-      <div v-if="!agentOnline" class="state-box state-offline">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        <span>Agent 未连接，无法管理权限组。请先启动服务器。</span>
-      </div>
+      <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理权限组。请先启动服务器。" />
 
       <!-- 无服务器 -->
       <div v-else-if="!activeServerKey" class="state-box state-empty">
@@ -299,6 +293,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, inject, watch, computed } from 'vue'
 import { PERMISSIONS_LIST } from '@/config/tshock_permissions.js'
+import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 const props = defineProps({
   agentOnline: { type: Boolean, default: false },
@@ -591,16 +587,6 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   background: #f1f5f9; /* modern light blue-gray background */
 }
 
-/* ── 页头 ───────────────────────────────────────────────────── */
-.page-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 20px 28px 16px; background: #fff; border-bottom: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.05); /* Slight shadow for depth */
-  flex-shrink: 0; flex-wrap: wrap; gap: 12px; z-index: 10;
-}
-.page-header-right { display: flex; gap: 8px; }
-.page-title { margin: 0; font-size: 19px; font-weight: 700; color: #0f172a; letter-spacing: -0.01em; }
-
 /* ── 主体 ────────────────────────────────────────────────────── */
 .gg-body {
   flex: 1; overflow: hidden; padding: 24px 28px; box-sizing: border-box;
@@ -654,8 +640,6 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.05);
 }
 .state-box svg { width: 22px; height: 22px; flex-shrink: 0; }
-.state-offline { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }
-.state-offline svg { stroke: #ea580c; }
 .state-empty { background: #fff; color: #94a3b8; border: 1px solid #e2e8f0; justify-content: center; flex-direction: column; padding: 80px 24px; text-align: center; }
 .state-empty svg { width: 48px; height: 48px; stroke: #cbd5e1; margin-bottom: 12px; }
 .state-loading { background: #fff; color: #64748b; border: 1px solid #e2e8f0; justify-content: center; padding: 80px 24px; flex-direction: row; gap: 12px; }
@@ -834,7 +818,6 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   .large-tags-box { height: 150px; overflow-y: auto; }
   .modal-doc-col { width: 100%; flex: none; border-left: none; border-top: 1px solid #e2e8f0; height: 400px; }
   
-  .page-header { padding: 18px 14px 14px; }
   .gg-body { padding: 14px; }
   .body-toolbar { flex-direction: column; align-items: stretch; }
   .toolbar-left { flex-direction: column; align-items: stretch; }
