@@ -8,15 +8,15 @@
           <span>控制台输出</span>
           <div class="panel-header-right">
             <span class="active-server-name" v-if="activeKey">{{ activeServerName }}</span>
-            <span class="active-server-name muted" v-else>广播模式</span>
+            <span class="active-server-name muted" v-else>未选择服务器</span>
             <button class="clear-btn" @click="logs = []">清空</button>
           </div>
         </div>
         <div class="log-box" ref="logBox">
           <div v-for="(l, i) in logs" :key="i" class="log-row">
             <span class="log-time">{{ l.time }}</span>
-            <span :class="['log-tag', l.tagClass]">{{ l.type }}</span>
-            <span class="log-content" v-html="l.content"></span>
+            <span :class="['log-tag', l.tagClass]">{{ logTypeLabel(l.type) }}</span>
+            <span class="log-content">{{ l.content }}</span>
           </div>
           <div v-if="!logs.length" class="log-empty">等待日志输出…</div>
         </div>
@@ -30,15 +30,15 @@
             <input
               v-model="cmd"
               placeholder="如 /kick PlayerA 或 /tp Player1 Player2"
-              @keyup.enter="doSend"
+              @keydown="onCommandKeydown"
               ref="cmdInput"
-              :disabled="wsState !== 'connected' || !canUseConsole || !activeKey"
+              :disabled="sendDisabled"
             />
           </div>
           <button
             class="send-btn"
             @click="doSend"
-            :disabled="wsState !== 'connected' || !cmd || !canUseConsole || !activeKey"
+            :disabled="sendDisabled || !cmd.trim()"
           >
             发送
           </button>
@@ -57,9 +57,9 @@
               {{ agentOnline ? '已连接' : '未连接' }}
             </span>
           </span>
-          <span v-if="!canUseConsole" class="hint-server">无控制台权限（仅 owner/web_staff 可用）</span>
+          <span v-if="!canUseConsole" class="hint-server">缺少控制台权限</span>
           <span v-if="activeKey" class="hint-server">目标：{{ activeServerName }}</span>
-          <span v-else class="hint-server">广播模式</span>
+          <span v-else class="hint-server">请选择服务器</span>
         </div>
       </div>
     </main>
@@ -67,7 +67,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, inject } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, inject, watch } from 'vue'
 
 const props = defineProps({
   wsState:     { type: String, default: 'disconnected' },
@@ -78,18 +78,27 @@ const logs     = ref([])
 const cmd      = ref('')
 const logBox   = ref(null)
 const cmdInput = ref(null)
+const commandHistory = ref([])
+const historyIndex = ref(-1)
+const MAX_LOGS = 500
 
 // 从 MainLayout 注入全局服务器状态
 const myServers = inject('myServers', ref([]))
 const activeKey = inject('activeServerKey', ref(''))
 const activeServer = inject('activeServer', ref(null))
+const hasPerm = inject('hasPerm', () => false)
 
 const canUseConsole = computed(() => {
   const role = activeServer.value?.server_role
-  return role === 'owner' || role === 'web_staff'
+  return role === 'owner' || role === 'web_staff' || hasPerm('panel.console')
+})
+
+const sendDisabled = computed(() => {
+  return props.wsState !== 'connected' || !props.agentOnline || !canUseConsole.value || !activeKey.value
 })
 
 const activeServerName = computed(() => {
+  if (activeServer.value?.name) return activeServer.value.name
   const s = myServers.value?.find(s => s.agent_key === activeKey.value)
   return s ? s.name : (activeKey.value || '')
 })
@@ -98,45 +107,87 @@ function addLog(type, content, tagClass = 'tag-sys') {
   logs.value.push({
     time: new Date().toLocaleTimeString(),
     type,
-    content: escHtml(content),
+    content: String(content ?? ''),
     tagClass
   })
+  if (logs.value.length > MAX_LOGS) {
+    logs.value.splice(0, logs.value.length - MAX_LOGS)
+  }
   nextTick(() => {
     if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
   })
 }
 
-function escHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+function logTypeLabel(type) {
+  return ({
+    sys: '系统',
+    error: '错误',
+    log: '日志',
+    response: '返回',
+    send: '发送',
+  })[type] || type
+}
+
+function normalizeAgentKey(v) {
+  return String(v ?? '').trim()
+}
+
+function isForActiveServer(pkt) {
+  const metaKey = normalizeAgentKey(pkt.metadata?.agent_key)
+  if (!metaKey) return true
+  return metaKey === normalizeAgentKey(activeKey.value)
 }
 
 // 接收来自 MainLayout 广播的 WebSocket 消息
 function onWsMessage(e) {
   const pkt = e.detail
+  if (!isForActiveServer(pkt)) return
   const p   = pkt.payload || {}
   switch (pkt.type) {
     case 'auth':
-      addLog('SYS', `身份验证成功`, 'tag-sys')
+      addLog('sys', `身份验证成功`, 'tag-sys')
       break
     case 'error':
-      addLog('ERR', pkt.msg || '未知错误', 'tag-error')
+      addLog('error', pkt.msg || '未知错误', 'tag-error')
       break
     case 'log':
-      addLog('LOG', p.content || '', 'tag-log')
-      break
-    case 'status':
-      addLog('STAT', `在线: ${p.online_players}/${p.max_players} · 世界: ${p.world_name}`, 'tag-stat')
+      addLog('log', p.content || '', 'tag-log')
       break
     case 'cmd_resp':
       addLog(
-        'RESP',
-        `[${(p.ref_id || '').substring(0, 6)}] ${p.output || '(无输出)'}`,
+        'response',
+        p.output || '(无输出)',
         p.success ? 'tag-ok' : 'tag-error'
       )
       break
+  }
+}
+
+function onCommandKeydown(e) {
+  if (e.isComposing) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    doSend()
+    return
+  }
+  if (e.key === 'ArrowUp') {
+    if (!commandHistory.value.length) return
+    e.preventDefault()
+    if (historyIndex.value < 0) historyIndex.value = commandHistory.value.length - 1
+    else historyIndex.value = Math.max(0, historyIndex.value - 1)
+    cmd.value = commandHistory.value[historyIndex.value] || ''
+    return
+  }
+  if (e.key === 'ArrowDown') {
+    if (historyIndex.value < 0) return
+    e.preventDefault()
+    historyIndex.value += 1
+    if (historyIndex.value >= commandHistory.value.length) {
+      historyIndex.value = -1
+      cmd.value = ''
+    } else {
+      cmd.value = commandHistory.value[historyIndex.value] || ''
+    }
   }
 }
 
@@ -144,19 +195,30 @@ function doSend() {
   if (!canUseConsole.value) return
   if (!activeKey.value) return
   if (!cmd.value.trim()) return
+  if (!props.agentOnline) return
   if (props.wsState !== 'connected') return
 
+  const rawCmd = cmd.value.trim()
   const packet = {
     type:      'cmd',
     msg_id:    Math.random().toString(36).substring(2),
     timestamp: Date.now(),
     payload:   {
-      raw_cmd:   cmd.value.trim(),
+      raw_cmd:   rawCmd,
       agent_key: activeKey.value || undefined,
     }
   }
-  window.__tshockSend?.(packet)
-  addLog('SEND', `[${activeServerName.value || '全部'}] ${cmd.value}`, 'tag-send')
+  const sent = window.__tshockSend?.(packet)
+  if (sent === false) {
+    addLog('error', 'WebSocket 未连接，发送失败', 'tag-error')
+    return
+  }
+  if (commandHistory.value[commandHistory.value.length - 1] !== rawCmd) {
+    commandHistory.value.push(rawCmd)
+    if (commandHistory.value.length > 50) commandHistory.value.shift()
+  }
+  historyIndex.value = -1
+  addLog('send', `[${activeServerName.value}] ${rawCmd}`, 'tag-send')
   cmd.value = ''
 }
 
@@ -165,6 +227,11 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.removeEventListener('ws-message', onWsMessage)
+})
+
+watch(activeKey, () => {
+  logs.value = []
+  historyIndex.value = -1
 })
 </script>
 
@@ -255,7 +322,7 @@ onUnmounted(() => {
   font-size: 11px; font-weight: 700; padding: 1px 6px;
   border-radius: 4px; flex-shrink: 0; min-width: 42px; text-align: center;
 }
-.log-content { color: #334155; word-break: break-all; }
+.log-content { color: #334155; word-break: break-word; white-space: pre-wrap; }
 
 .tag-sys   { background: #dbeafe; color: #1d4ed8; }
 .tag-log   { background: #f1f5f9; color: #64748b; }
@@ -263,7 +330,6 @@ onUnmounted(() => {
 .tag-error { background: #fee2e2; color: #dc2626; }
 .tag-warn  { background: #fef3c7; color: #b45309; }
 .tag-send  { background: #ede9fe; color: #7c3aed; }
-.tag-stat  { background: #cffafe; color: #0e7490; }
 
 /* ── 指令输入 ── */
 .input-panel {

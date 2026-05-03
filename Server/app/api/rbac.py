@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from fastapi import APIRouter, HTTPException, Depends, Header
 from app.core.config import AUTH_DB_PATH
@@ -23,17 +24,22 @@ async def check_admin_perm(authorization: str = Header(...)):
 @router.get("/groups")
 async def list_groups(_ = Depends(check_admin_perm)):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
-        groups = conn.execute("SELECT id, name, parent_id, description FROM account_roles").fetchall()
+        groups = conn.execute("SELECT id, name, parent_group_id, description, permissions FROM AccountAccessGroups").fetchall()
         result = []
         for g in groups:
-            gid, name, pid, desc = g
-            perms = conn.execute("SELECT permission FROM account_role_permissions WHERE group_id=?", (gid,)).fetchall()
+            gid, name, pid, desc, perms_raw = g
+            try:
+                perms = json.loads(perms_raw or "[]")
+                if not isinstance(perms, list):
+                    perms = []
+            except Exception:
+                perms = []
             result.append({
                 "id": gid,
                 "name": name,
                 "parent_id": pid,
                 "description": desc,
-                "permissions": [p[0] for p in perms]
+                "permissions": [str(p) for p in perms if p]
             })
         return {"ok": True, "data": result}
 
@@ -42,12 +48,11 @@ async def create_group(req: GroupCreate, _ = Depends(check_admin_perm)):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         try:
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO account_roles(name, parent_id, description) VALUES(?,?,?)",
-                         (req.name, req.parent_id, req.description))
+            cursor.execute(
+                "INSERT INTO AccountAccessGroups(name, parent_group_id, description, permissions) VALUES(?,?,?,?)",
+                (req.name, req.parent_id, req.description, json.dumps(req.permissions, ensure_ascii=False)),
+            )
             gid = cursor.lastrowid
-            # 插入权限
-            for p in req.permissions:
-                cursor.execute("INSERT INTO account_role_permissions(group_id, permission) VALUES(?,?)", (gid, p))
             conn.commit()
             return {"ok": True, "id": gid}
         except sqlite3.IntegrityError:
@@ -57,36 +62,31 @@ async def create_group(req: GroupCreate, _ = Depends(check_admin_perm)):
 async def delete_group(group_id: int, _ = Depends(check_admin_perm)):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         # 不能删除核心角色 (模仿 TShock)
-        group = conn.execute("SELECT name FROM account_roles WHERE id=?", (group_id,)).fetchone()
+        group = conn.execute("SELECT name FROM AccountAccessGroups WHERE id=?", (group_id,)).fetchone()
         if not group:
              raise HTTPException(404, "组不存在")
         if group[0] in ['superadmin', 'admin', 'default']:
              raise HTTPException(403, f"不能删除系统内置角色: {group[0]}")
         
-        conn.execute("DELETE FROM account_roles WHERE id=?", (group_id,))
-        # 级联删除权限和用户关系已经在 DB 层级配置 ON DELETE CASCADE
+        conn.execute("UPDATE users SET access_group_id=NULL WHERE access_group_id=?", (group_id,))
+        conn.execute("DELETE FROM AccountAccessGroups WHERE id=?", (group_id,))
         conn.commit()
     return {"ok": True}
 
 # 3. 用户-组管理
 @router.post("/users/{email}/groups")
-async def update_account_role_members(email: str, req: UserGroupUpdate, _ = Depends(check_admin_perm)):
+async def update_account_access_group(email: str, req: UserGroupUpdate, _ = Depends(check_admin_perm)):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute("SELECT id FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone()
         if not row:
             raise HTTPException(404, "用户不存在")
         user_id = row[0]
         
-        cursor = conn.cursor()
-        # 清除旧记录
-        cursor.execute("DELETE FROM account_role_members WHERE user_id=?", (user_id,))
-        
-        # 添加新组
-        for gname in req.groups:
-            grow = cursor.execute("SELECT id FROM account_roles WHERE name=?", (gname,)).fetchone()
-            if grow:
-                cursor.execute("INSERT INTO account_role_members(user_id, group_id) VALUES(?,?)", (user_id, grow[0]))
-        
+        group_name = req.groups[0] if req.groups else "default"
+        grow = conn.execute("SELECT id FROM AccountAccessGroups WHERE name=?", (group_name,)).fetchone()
+        if not grow:
+            raise HTTPException(404, "权限组不存在")
+        conn.execute("UPDATE users SET access_group_id=? WHERE id=?", (grow[0], user_id))
         conn.commit()
     return {"ok": True}
 
@@ -98,9 +98,9 @@ async def list_users_with_groups(_ = Depends(check_admin_perm)):
         for u in users:
             uid, email, cat = u
             groups = conn.execute("""
-                SELECT g.name FROM account_roles g 
-                JOIN account_role_members ug ON g.id = ug.group_id 
-                WHERE ug.user_id=?
+                SELECT g.name FROM AccountAccessGroups g
+                JOIN users u ON u.access_group_id = g.id
+                WHERE u.id=?
             """, (uid,)).fetchall()
             result.append({
                 "email": email,

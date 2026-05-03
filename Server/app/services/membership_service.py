@@ -12,6 +12,7 @@ def add_member(
     user_id: int,
     source: str,
     role: ServerMemberRole = ServerMemberRole.member,
+    access_group_id: Optional[int] = None,
     source_ref_type: Optional[str] = None,
     source_ref_id: Optional[int] = None,
     joined_by_user_id: Optional[int] = None,
@@ -21,12 +22,15 @@ def add_member(
     if existing:
         if role == ServerMemberRole.owner and existing.role != ServerMemberRole.owner:
             existing.role = ServerMemberRole.owner
+        if access_group_id is not None:
+            existing.access_group_id = access_group_id
         return existing
 
     member = ServerMember(
         server_id=server_id,
         user_id=user_id,
         role=role,
+        access_group_id=access_group_id,
         joined_at=int(time.time()),
         join_source=source,
         join_source_ref_type=source_ref_type,

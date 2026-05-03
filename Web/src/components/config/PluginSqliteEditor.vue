@@ -22,7 +22,7 @@
 
     <!-- 右侧：数据表格 -->
     <main class="db-main">
-      <div v-if="!activeTable" class="db-placeholder">← 从左侧选择一个表查看数据</div>
+      <div v-if="!activeTable" class="db-placeholder">从左侧选择一个表查看数据</div>
       <template v-else>
         <div class="db-toolbar">
           <span class="db-table-title">{{ activeTable }}</span>
@@ -46,8 +46,21 @@
                   <span class="db-cell">{{ row[col] !== null ? row[col] : 'NULL' }}</span>
                 </td>
                 <td class="db-td td-action">
-                  <button class="row-btn edit-btn" @click="openEdit(row)">✏</button>
-                  <button class="row-btn del-btn" @click="openDeleteRow(row)">🗑</button>
+                  <button class="row-btn edit-btn" @click="openEdit(row)" title="编辑行">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 20h9"/>
+                      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                    </svg>
+                  </button>
+                  <button class="row-btn del-btn" @click="openDeleteRow(row)" title="删除行">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="3 6 5 6 21 6"/>
+                      <path d="M19 6l-1 14H6L5 6"/>
+                      <path d="M10 11v6"/>
+                      <path d="M14 11v6"/>
+                      <path d="M9 6V4h6v2"/>
+                    </svg>
+                  </button>
                 </td>
               </tr>
               <tr v-if="rows.length === 0">
@@ -406,7 +419,9 @@ onMounted(() => {
 
 .row-btn {
   background: none; border: none; cursor: pointer; color: #94a3b8; margin: 0 4px; padding: 4px; transition: color .15s;
+  line-height: 0;
 }
+.row-btn svg { width: 15px; height: 15px; }
 .row-btn:hover { color: #60a5fa; }
 .row-btn.del-btn:hover { color: #f87171; }
 

@@ -23,6 +23,7 @@ namespace TerrariaManagerAgent.Services
         private readonly ServerHandler    _server;
         private readonly WorldHandler     _world;
         private readonly AgentStoreHandler _store;
+        private readonly RuntimeBroadcastService? _runtime;
 
         private static readonly HashSet<string> NoisyReadOps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -37,6 +38,7 @@ namespace TerrariaManagerAgent.Services
             "file_list",
             "file_read",
             "db_query",
+            "get_status",
             "player_list",
             "get_char_info",
             "world_progress",
@@ -102,9 +104,10 @@ namespace TerrariaManagerAgent.Services
             }
         }
 
-        public CommandHandler(WebSocketService wsService)
+        public CommandHandler(WebSocketService wsService, RuntimeBroadcastService? runtime = null)
         {
             _wsService = wsService;
+            _runtime   = runtime;
             _file      = new FileHandler(wsService);
             _db        = new DatabaseHandler(wsService);
             _player    = new PlayerHandler(wsService);
@@ -141,6 +144,7 @@ namespace TerrariaManagerAgent.Services
                     case "db_delete_row":        await _db.HandleDbDeleteRow(envelope);              break;
                     case "db_insert_row":        await _db.HandleDbInsertRow(envelope);              break;
                     case "server_ctrl":          await _server.HandleServerControl(envelope);        break;
+                    case "get_status":           if (_runtime != null) await _runtime.BroadcastStatusOnce(); break;
                     case "player_list":          await _player.HandlePlayerList(envelope);           break;
                     case "player_action":        await _player.HandlePlayerAction(envelope);         break;
                     case "register_user":        await _player.HandleRegisterUser(envelope);         break;
@@ -219,6 +223,21 @@ namespace TerrariaManagerAgent.Services
                 ErrCode = 0
             };
 
+            var rawCmd = (payload.RawCmd ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(rawCmd))
+            {
+                resp.Output = "指令不能为空";
+                await SendBack(resp);
+                return;
+            }
+
+            if (payload.Executor == null)
+            {
+                resp.Output = "执行身份缺失";
+                await SendBack(resp);
+                return;
+            }
+
             var runner = new AgentCommandRunner(payload.Executor.TsUser);
 
             if (payload.Executor.IsConsole)
@@ -237,8 +256,14 @@ namespace TerrariaManagerAgent.Services
                 runner.Group = group;
             }
 
-            string cmdText = payload.RawCmd.StartsWith("/") ? payload.RawCmd.Substring(1) : payload.RawCmd;
-            var cmdParts   = cmdText.Split(' ');
+            string cmdText = rawCmd.StartsWith("/") ? rawCmd.Substring(1) : rawCmd;
+            var cmdParts   = cmdText.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (cmdParts.Length == 0)
+            {
+                resp.Output = "指令不能为空";
+                await SendBack(resp);
+                return;
+            }
             var commands   = Commands.ChatCommands.FindAll(c => c.Names.Contains(cmdParts[0]));
 
             if (commands.Count == 0)
@@ -252,8 +277,20 @@ namespace TerrariaManagerAgent.Services
             else
             {
                 runner.OutputLines.Clear();
-                resp.Success = Commands.HandleCommand(runner, payload.RawCmd);
-                resp.Output  = string.Join("\n", runner.OutputLines);
+                try
+                {
+                    resp.Success = Commands.HandleCommand(runner, rawCmd);
+                    resp.Output  = string.Join("\n", runner.OutputLines);
+                    if (!resp.Success && string.IsNullOrWhiteSpace(resp.Output))
+                    {
+                        resp.Output = "指令执行失败";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    resp.Success = false;
+                    resp.Output = $"指令执行异常: {ex.Message}";
+                }
             }
 
             await SendBack(resp);

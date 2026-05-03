@@ -49,7 +49,7 @@ def _blacklist_join_block_reason(server_id: int, user_id: int, threshold: int) -
         local = conn.execute(
             """
             SELECT COUNT(*)
-            FROM agent_server_blacklist_cache
+            FROM AgentServerBlacklistCache
             WHERE server_id=? AND target_user_id=? AND status='active'
             """,
             (server_id, user_id),
@@ -60,7 +60,7 @@ def _blacklist_join_block_reason(server_id: int, user_id: int, threshold: int) -
             cloud = conn.execute(
                 """
                 SELECT COUNT(*)
-                FROM cloud_blacklist_entries
+                FROM CloudBlacklistEntries
                 WHERE target_user_id=? AND status='approved'
                 """,
                 (user_id,),
@@ -131,7 +131,7 @@ def list_my_join_requests(
                 r.review_note, r.created_at, r.updated_at, r.withdrawn_at
             FROM (
                 SELECT *, from_user_id AS applicant_user_id
-                FROM server_member_requests
+                FROM ServerMemberRequests
                 WHERE request_type='join'
             ) r
             LEFT JOIN servers s ON s.id = r.server_id
@@ -175,7 +175,7 @@ def withdraw_my_join_request(
         req = conn.execute(
             """
             SELECT id, server_id, status
-            FROM server_member_requests
+            FROM ServerMemberRequests
             WHERE id=? AND request_type='join' AND from_user_id=?
             """,
             (request_id, user_id),
@@ -187,7 +187,7 @@ def withdraw_my_join_request(
 
         conn.execute(
             """
-            UPDATE server_member_requests
+            UPDATE ServerMemberRequests
             SET status='withdrawn', withdrawn_at=?, updated_at=?
             WHERE id=?
             """,
@@ -219,7 +219,7 @@ def list_my_invites(
                 i.created_at, i.updated_at
             FROM (
                 SELECT *, from_user_id AS inviter_user_id, to_user_id AS invitee_user_id
-                FROM server_member_requests
+                FROM ServerMemberRequests
                 WHERE request_type='invite'
             ) i
             LEFT JOIN servers s ON s.id = i.server_id
@@ -256,7 +256,7 @@ def respond_invite(
             SELECT id, server_id, inviter_user_id, invitee_user_id, status, expires_at
             FROM (
                 SELECT *, from_user_id AS inviter_user_id, to_user_id AS invitee_user_id
-                FROM server_member_requests
+                FROM ServerMemberRequests
                 WHERE request_type='invite'
             )
             WHERE id=? AND invitee_user_id=?
@@ -269,7 +269,7 @@ def respond_invite(
             raise HTTPException(409, f"当前邀请状态为 {inv['status']}，不可重复处理")
         if inv["expires_at"] is not None and inv["expires_at"] < now_ts:
             conn.execute(
-                "UPDATE server_member_requests SET status='expired', updated_at=? WHERE id=? AND request_type='invite'",
+                "UPDATE ServerMemberRequests SET status='expired', updated_at=? WHERE id=? AND request_type='invite'",
                 (now_ts, invite_id),
             )
             conn.commit()
@@ -310,7 +310,7 @@ def respond_invite(
         new_status = "accepted" if action == "accept" else "rejected"
         conn.execute(
             """
-            UPDATE server_member_requests
+            UPDATE ServerMemberRequests
             SET status=?, acted_at=?, updated_at=?
             WHERE id=? AND request_type='invite'
             """,

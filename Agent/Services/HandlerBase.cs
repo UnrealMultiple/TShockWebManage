@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using TerrariaManagerAgent.Models;
 
 namespace TerrariaManagerAgent.Services
@@ -26,9 +27,23 @@ namespace TerrariaManagerAgent.Services
         {
             try
             {
-                return Path.GetDirectoryName(
-                    Process.GetCurrentProcess().MainModule?.FileName
-                ) ?? Directory.GetCurrentDirectory();
+                var pluginDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                if (!string.IsNullOrEmpty(pluginDir))
+                {
+                    var dir = new DirectoryInfo(pluginDir);
+                    if (string.Equals(dir.Name, "ServerPlugins", StringComparison.OrdinalIgnoreCase)
+                        && dir.Parent != null)
+                    {
+                        return dir.Parent.FullName;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                return Path.GetDirectoryName(Process.GetCurrentProcess().MainModule?.FileName)
+                    ?? Directory.GetCurrentDirectory();
             }
             catch { return Directory.GetCurrentDirectory(); }
         }
@@ -40,8 +55,19 @@ namespace TerrariaManagerAgent.Services
             try
             {
                 var full       = Path.GetFullPath(path);
-                var serverFull = Path.GetFullPath(GetServerDir());
-                return full.StartsWith(serverFull, StringComparison.OrdinalIgnoreCase);
+                var serverFull = Path.GetFullPath(GetServerDir()).TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar
+                );
+                return string.Equals(full, serverFull, StringComparison.OrdinalIgnoreCase)
+                    || full.StartsWith(
+                        serverFull + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    || full.StartsWith(
+                        serverFull + Path.AltDirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase
+                    );
             }
             catch { return false; }
         }

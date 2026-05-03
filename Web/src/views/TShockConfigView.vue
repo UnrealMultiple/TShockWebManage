@@ -22,7 +22,7 @@
           {{ reloading ? '重载中…' : '立即重载' }}
         </button>
         <button class="cfg-btn cfg-btn-primary" @click="saveConfig"
-          :disabled="!modified || saving || !agentOnline || !activeServerKey">
+          :disabled="!modified || saving || !agentOnline || !activeServerKey || (editorMode === 'json' && !!jsonError)">
           <svg v-if="saving" viewBox="0 0 24 24" class="spinning" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="1 4 1 10 7 10"/>
             <path d="M3.51 15a9 9 0 1 0 .49-3.18"/>
@@ -76,51 +76,108 @@
           <button class="cfg-toast-close" @click="saveResult = null">✕</button>
         </div>
 
-        <!-- 搜索框 -->
-        <div class="cfg-search-bar">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-          <input v-model="searchQuery" class="cfg-search-input" placeholder="搜索配置项…" />
-          <button v-if="searchQuery" class="cfg-search-clear" @click="searchQuery = ''">✕</button>
-        </div>
-
-        <!-- 搜索模式：扁平列表 -->
-        <div v-if="searchQuery.trim()" class="cfg-search-results">
-          <div v-if="filteredFields.length === 0" class="cfg-no-result">没有匹配"{{ searchQuery }}"的配置项</div>
-          <template v-else>
-            <div v-for="f in filteredFields" :key="f.key" class="cfg-field-row">
-              <FieldControl :field="f" :modelValue="configData[f.key]"
-                @update:modelValue="setField(f.key, $event)" />
-            </div>
-          </template>
-        </div>
-
-        <!-- 分类标签页 -->
-        <template v-else>
-          <div class="cfg-cats">
-            <button v-for="cat in categories" :key="cat"
-              :class="['cfg-cat-btn', { active: activeCat === cat }]"
-              @click="activeCat = cat">
-              {{ cat }}
-              <span class="cfg-cat-count">{{ countByCategory[cat] }}</span>
+        <div class="cfg-mode-bar">
+          <div class="cfg-mode-tabs">
+            <button :class="['cfg-mode-btn', { active: editorMode === 'visual' }]" @click="switchEditorMode('visual')">
+              可视化
+            </button>
+            <button :class="['cfg-mode-btn', { active: editorMode === 'json' }]" @click="switchEditorMode('json')">
+              JSON
             </button>
           </div>
+          <button v-if="editorMode === 'json'" class="cfg-btn cfg-btn-outline cfg-format-btn" @click="formatJsonText">
+            格式化
+          </button>
+          <span v-if="editorMode === 'json' && jsonError" class="cfg-json-error">{{ jsonErrorSummary }}</span>
+        </div>
 
-          <div class="cfg-fields-panel">
-            <div v-for="f in currentFields" :key="f.key" class="cfg-field-row">
-              <FieldControl :field="f" :modelValue="configData[f.key]"
-                @update:modelValue="setField(f.key, $event)" />
+        <template v-if="editorMode === 'visual'">
+          <!-- 搜索框 -->
+          <div class="cfg-search-bar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input v-model="searchQuery" class="cfg-search-input" placeholder="搜索配置项…" />
+            <button v-if="searchQuery" class="cfg-search-clear" @click="searchQuery = ''">✕</button>
+          </div>
+
+          <!-- 搜索模式：扁平列表 -->
+          <div v-if="searchQuery.trim()" class="cfg-search-results">
+            <div v-if="filteredFields.length === 0" class="cfg-no-result">没有匹配"{{ searchQuery }}"的配置项</div>
+            <template v-else>
+              <div v-for="f in filteredFields" :key="f.key" class="cfg-field-row">
+                <FieldControl :field="f" :modelValue="configData[f.key]"
+                  @update:modelValue="setField(f.key, $event)" />
+              </div>
+            </template>
+          </div>
+
+          <!-- 分类标签页 -->
+          <template v-else>
+            <div class="cfg-cats">
+              <button v-for="cat in categories" :key="cat"
+                :class="['cfg-cat-btn', { active: activeCat === cat }]"
+                @click="activeCat = cat">
+                {{ cat }}
+                <span class="cfg-cat-count">{{ countByCategory[cat] }}</span>
+              </button>
+            </div>
+
+            <div class="cfg-fields-panel">
+              <div v-for="f in currentFields" :key="f.key" class="cfg-field-row">
+                <FieldControl :field="f" :modelValue="configData[f.key]"
+                  @update:modelValue="setField(f.key, $event)" />
+              </div>
+            </div>
+          </template>
+        </template>
+
+        <div v-else class="cfg-json-panel">
+          <div class="cfg-json-editor" :class="{ invalid: !!jsonError }">
+            <div ref="jsonLineGutterEl" class="cfg-json-gutter" aria-hidden="true">
+              <span v-for="line in jsonLineNumbers" :key="line" :class="{ error: line === jsonErrorLine }">{{ line }}</span>
+            </div>
+            <pre ref="jsonHighlightEl" class="cfg-json-highlight" aria-hidden="true"><code v-html="highlightedJson"></code></pre>
+            <textarea
+              ref="jsonTextareaEl"
+              class="cfg-json-input"
+              v-model="rawJsonText"
+              spellcheck="false"
+              @input="onRawJsonInput"
+              @scroll="syncJsonScroll"
+              @keydown.tab.prevent="insertJsonIndent"
+            ></textarea>
+          </div>
+          <div v-if="jsonError" class="cfg-json-err">
+            <div class="cfg-json-err-head">
+              <strong>JSON 格式不正确</strong>
+              <button v-if="jsonErrorPos" class="cfg-json-err-jump" @click="jumpToJsonError">定位到错误</button>
+            </div>
+            <div class="cfg-json-err-msg">{{ jsonError }}</div>
+            <div v-if="jsonErrorPos" class="cfg-json-err-meta">
+              第 {{ jsonErrorPos.line }} 行，第 {{ jsonErrorPos.col }} 列附近
+            </div>
+            <div v-if="jsonErrorContext.length" class="cfg-json-err-context">
+              <template v-for="row in jsonErrorContext" :key="`${row.line}-${row.isCaret ? 'caret' : 'code'}`">
+                <div v-if="!row.isCaret" :class="['cfg-json-err-row', { error: row.isError }]">
+                  <span class="cfg-json-err-no">{{ row.line }}</span>
+                  <code>{{ row.text || ' ' }}</code>
+                </div>
+                <div v-else class="cfg-json-err-row cfg-json-err-caret">
+                  <span class="cfg-json-err-no"></span>
+                  <code :style="{ paddingLeft: `${Math.max(0, row.col - 1)}ch` }">^</code>
+                </div>
+              </template>
             </div>
           </div>
-        </template>
+        </div>
       </div>
     </template>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, inject } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, inject, nextTick } from 'vue'
 import { CONFIG_FILE_MAP } from '@/config/tshock_schema.js'
 import FieldControl from '@/components/config/FieldControl.vue'
 import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
@@ -146,9 +203,29 @@ const activeCat    = ref('')
 const searchQuery  = ref('')
 const configData   = ref({})
 const rawWrapper   = ref(null)
+const editorMode   = ref('visual')
+const rawJsonText  = ref('')
+const jsonError    = ref('')
+const jsonErrorPos = ref(null)
+const jsonTextareaEl = ref(null)
+const jsonHighlightEl = ref(null)
+const jsonLineGutterEl = ref(null)
 
 const fileConf = computed(() => CONFIG_FILE_MAP[props.configFile] || CONFIG_FILE_MAP.config)
 const schema   = computed(() => fileConf.value.schema)
+const jsonLineNumbers = computed(() => {
+  const count = Math.max(1, String(rawJsonText.value || '').split('\n').length)
+  return Array.from({ length: count }, (_, index) => index + 1)
+})
+const jsonErrorLine = computed(() => jsonErrorPos.value?.line || 0)
+const jsonErrorSummary = computed(() => {
+  if (!jsonError.value) return ''
+  return jsonErrorPos.value
+    ? `第 ${jsonErrorPos.value.line} 行附近有格式问题`
+    : 'JSON 格式不正确'
+})
+const jsonErrorContext = computed(() => getJsonErrorContext(rawJsonText.value, jsonErrorPos.value))
+const highlightedJson = computed(() => highlightJson(rawJsonText.value, jsonErrorLine.value))
 
 // schema 快速查找表：key → 字段定义
 const schemaMap = computed(() => {
@@ -215,6 +292,269 @@ const filteredFields = computed(() => {
   )
 })
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function highlightJsonLine(value) {
+  const text = String(value || '')
+  const tokenPattern = /("(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g
+  let html = ''
+  let cursor = 0
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0]
+    const index = match.index ?? 0
+    html += escapeHtml(text.slice(cursor, index))
+    let cls = 'json-number'
+    if (token.startsWith('"')) cls = /:\s*$/.test(token) ? 'json-key' : 'json-string'
+    else if (token === 'true' || token === 'false') cls = 'json-bool'
+    else if (token === 'null') cls = 'json-null'
+    html += `<span class="${cls}">${escapeHtml(token)}</span>`
+    cursor = index + token.length
+  }
+  html += escapeHtml(text.slice(cursor))
+  return html
+}
+
+function highlightJson(value, errorLine = 0) {
+  const text = String(value || '')
+  if (!text) return '<span class="json-line"><span class="json-muted">{}</span></span>'
+  return text.split('\n').map((line, index) => {
+    const lineNo = index + 1
+    const cls = lineNo === errorLine ? 'json-line is-error' : 'json-line'
+    return `<span class="${cls}">${highlightJsonLine(line) || '&nbsp;'}</span>`
+  }).join('')
+}
+
+function extractConfigSource(rawRoot) {
+  if (!rawRoot || typeof rawRoot !== 'object' || Array.isArray(rawRoot)) {
+    throw new Error('JSON 根节点必须是对象')
+  }
+  const hasWrapper = rawRoot.Settings && typeof rawRoot.Settings === 'object' && !Array.isArray(rawRoot.Settings)
+  if (rawRoot.Settings && !hasWrapper) {
+    throw new Error('Settings 必须是对象')
+  }
+  return {
+    source: hasWrapper ? rawRoot.Settings : rawRoot,
+    wrapper: hasWrapper ? rawRoot : null,
+  }
+}
+
+function applyConfigRoot(rawRoot, { markModified = false, updateRaw = true } = {}) {
+  const { source, wrapper } = extractConfigSource(rawRoot)
+  rawWrapper.value = wrapper
+  configData.value = { ...source }
+  configLoaded.value = true
+  modified.value = markModified
+  loadError.value = ''
+  jsonError.value = ''
+  jsonErrorPos.value = null
+  if (updateRaw) rawJsonText.value = JSON.stringify(rawRoot, null, 2)
+  if (!activeCat.value && categories.value.length > 0) {
+    activeCat.value = categories.value[0]
+  }
+}
+
+function cleanVisualConfigData() {
+  const cleaned = { ...configData.value }
+  for (const key of Object.keys(cleaned)) {
+    const f = schemaMap.value[key]
+    if (f?.type === 'rest_tokens' && cleaned[key] && typeof cleaned[key] === 'object' && !Array.isArray(cleaned[key])) {
+      const filtered = {}
+      for (const [k, v] of Object.entries(cleaned[key])) {
+        if (k) filtered[k] = v
+      }
+      cleaned[key] = filtered
+    }
+  }
+  return cleaned
+}
+
+function buildVisualConfigRoot() {
+  const cleaned = cleanVisualConfigData()
+  return rawWrapper.value
+    ? { ...rawWrapper.value, Settings: cleaned }
+    : cleaned
+}
+
+function syncRawFromVisual() {
+  rawJsonText.value = JSON.stringify(buildVisualConfigRoot(), null, 2)
+  jsonError.value = ''
+  jsonErrorPos.value = null
+  nextTick(syncJsonScroll)
+}
+
+function parseRawJsonText() {
+  try {
+    const rawRoot = JSON.parse(rawJsonText.value)
+    extractConfigSource(rawRoot)
+    jsonError.value = ''
+    jsonErrorPos.value = null
+    return rawRoot
+  } catch (err) {
+    jsonErrorPos.value = parseJsonErrorPosition(rawJsonText.value, err)
+    jsonError.value = formatFriendlyJsonError(rawJsonText.value, err)
+    return null
+  }
+}
+
+function parseJsonErrorPosition(text, err) {
+  const msg = String(err?.message || '')
+  const lineCol = msg.match(/line\s+(\d+)\s+column\s+(\d+)/i)
+  if (lineCol) {
+    const line = Number(lineCol[1])
+    const col = Number(lineCol[2])
+    const lines = String(text || '').split('\n')
+    const idx = lines.slice(0, Math.max(0, line - 1)).reduce((sum, lineText) => sum + lineText.length + 1, 0) + Math.max(0, col - 1)
+    return { idx: Math.min(idx, text.length), line, col }
+  }
+
+  const posMatch = msg.match(/position\s+(\d+)/i)
+  if (!posMatch) return null
+  const idx = Math.min(Number(posMatch[1]), text.length)
+  if (!Number.isFinite(idx) || idx < 0) return null
+  const head = text.slice(0, idx)
+  const lines = head.split('\n')
+  return {
+    idx,
+    line: lines.length,
+    col: lines[lines.length - 1].length + 1,
+  }
+}
+
+function clampJsonContextLine(lineText, col = 1, isError = false) {
+  const text = String(lineText ?? '')
+  if (text.length <= 160) return { text, col }
+  if (!isError) return { text: `${text.slice(0, 157)}...`, col: 1 }
+  const safeCol = Math.max(1, col || 1)
+  const start = Math.max(0, safeCol - 81)
+  const end = Math.min(text.length, start + 160)
+  const prefix = start > 0 ? '...' : ''
+  const suffix = end < text.length ? '...' : ''
+  return {
+    text: `${prefix}${text.slice(start, end)}${suffix}`,
+    col: safeCol - start + prefix.length,
+  }
+}
+
+function getJsonErrorContext(text, pos, radius = 2) {
+  if (!pos) return []
+  const lines = String(text || '').split('\n')
+  const errorLine = Math.max(1, pos.line || 1)
+  const start = Math.max(1, errorLine - radius)
+  const end = Math.min(lines.length, errorLine + radius)
+  const rows = []
+  for (let lineNo = start; lineNo <= end; lineNo += 1) {
+    const isError = lineNo === errorLine
+    const lineInfo = clampJsonContextLine(lines[lineNo - 1] ?? '', pos.col || 1, isError)
+    rows.push({ line: lineNo, text: lineInfo.text, isError })
+    if (isError) rows.push({ line: lineNo, isCaret: true, col: lineInfo.col })
+  }
+  return rows
+}
+
+function jumpToJsonError() {
+  const pos = jsonErrorPos.value
+  const el = jsonTextareaEl.value
+  if (!pos || !el) return
+  const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 21
+  const colWidth = Math.max(7, (parseFloat(getComputedStyle(el).fontSize) || 13) * 0.62)
+  el.focus()
+  el.scrollTop = Math.max(0, (pos.line - 3) * lineHeight)
+  el.scrollLeft = Math.max(0, (pos.col - 36) * colWidth)
+  el.setSelectionRange(pos.idx ?? 0, pos.idx ?? 0)
+  syncJsonScroll({ target: el })
+}
+
+function friendlyJsonHint(err) {
+  const msg = String(err?.message || '')
+  if (/Expected double-quoted property name/i.test(msg)) {
+    return '对象属性名必须使用英文双引号，也可能是上一项末尾多了逗号。'
+  }
+  if (/Unexpected end of JSON input/i.test(msg)) {
+    return '内容还没有写完整，请检查结尾处是否缺少括号、方括号或引号。'
+  }
+  if (/Unterminated string/i.test(msg)) {
+    return '字符串没有正确结束，请检查是否缺少英文双引号。'
+  }
+  if (/Bad control character/i.test(msg)) {
+    return '字符串中包含未转义的换行或控制字符。'
+  }
+  if (/Unexpected token/i.test(msg) && /}/.test(msg)) {
+    return '可能存在多余逗号，或对象里缺少有效的键值对。'
+  }
+  if (/Unexpected string/i.test(msg)) {
+    return '可能缺少逗号，或键和值之间缺少冒号。'
+  }
+  if (/Unexpected non-whitespace character/i.test(msg)) {
+    return 'JSON 根节点后面还有多余内容。'
+  }
+  return '请检查逗号、冒号、英文双引号和括号是否成对。'
+}
+
+function formatFriendlyJsonError(text, err) {
+  const pos = parseJsonErrorPosition(text, err)
+  const hint = friendlyJsonHint(err)
+  return pos
+    ? `JSON 格式不正确：第 ${pos.line} 行，第 ${pos.col} 列附近。${hint}`
+    : `JSON 格式不正确：${hint}`
+}
+
+function switchEditorMode(mode) {
+  if (mode === editorMode.value) return
+  if (mode === 'json') {
+    syncRawFromVisual()
+  } else {
+    const rawRoot = parseRawJsonText()
+    if (!rawRoot) return
+    applyConfigRoot(rawRoot, { markModified: modified.value, updateRaw: false })
+  }
+  editorMode.value = mode
+}
+
+function onRawJsonInput() {
+  modified.value = true
+  const rawRoot = parseRawJsonText()
+  if (!rawRoot) return
+  applyConfigRoot(rawRoot, { markModified: true, updateRaw: false })
+}
+
+function formatJsonText() {
+  const rawRoot = parseRawJsonText()
+  if (!rawRoot) return
+  rawJsonText.value = JSON.stringify(rawRoot, null, 2)
+  applyConfigRoot(rawRoot, { markModified: true, updateRaw: false })
+  modified.value = true
+  nextTick(syncJsonScroll)
+}
+
+function syncJsonScroll(event) {
+  const source = event?.target
+  const target = jsonHighlightEl.value
+  if (!source || !target) return
+  target.scrollTop = source.scrollTop
+  target.scrollLeft = source.scrollLeft
+  if (jsonLineGutterEl.value) jsonLineGutterEl.value.scrollTop = source.scrollTop
+}
+
+function insertJsonIndent(event) {
+  const el = event.target
+  const start = el.selectionStart
+  const end = el.selectionEnd
+  rawJsonText.value = rawJsonText.value.slice(0, start) + '  ' + rawJsonText.value.slice(end)
+  onRawJsonInput()
+  nextTick(() => {
+    el.selectionStart = start + 2
+    el.selectionEnd = start + 2
+    syncJsonScroll({ target: el })
+  })
+}
+
 // ── 加载配置 ─────────────────────────────────────────────────────────
 function loadConfig() {
   if (!activeServerKey.value) return
@@ -231,26 +571,17 @@ function loadConfig() {
 // ── 保存配置 ─────────────────────────────────────────────────────────
 function saveConfig() {
   if (!modified.value || !activeServerKey.value) return
-  saving.value = true
-
-  // 清理 rest_tokens 字段中 key 为空string 的临时行
-  const cleaned = { ...configData.value }
-  for (const key of Object.keys(cleaned)) {
-    const f = schemaMap.value[key]
-    if (f?.type === 'rest_tokens' && cleaned[key] && typeof cleaned[key] === 'object' && !Array.isArray(cleaned[key])) {
-      const filtered = {}
-      for (const [k, v] of Object.entries(cleaned[key])) {
-        if (k) filtered[k] = v
-      }
-      cleaned[key] = filtered
-    }
+  let content = ''
+  if (editorMode.value === 'json') {
+    const rawRoot = parseRawJsonText()
+    if (!rawRoot) return
+    applyConfigRoot(rawRoot, { markModified: true, updateRaw: false })
+    content = rawJsonText.value
+  } else {
+    content = JSON.stringify(buildVisualConfigRoot(), null, 2)
   }
 
-  // 若原始文件有 Settings 包装器，写回时保留该结构
-  const toWrite = rawWrapper.value
-    ? { ...rawWrapper.value, Settings: cleaned }
-    : cleaned
-  const content = JSON.stringify(toWrite, null, 2)
+  saving.value = true
   window.__tshockSend?.({
     type: 'write_tshock_config',
     msg_id: `cfg-write-${Date.now()}`,
@@ -290,20 +621,7 @@ function onWsMessage(e) {
     }
     try {
       const rawRoot = JSON.parse(p.content)
-      // TShock 5.x 将所有设置包在 "Settings" 键下；兼容旧格式
-      const hasWrapper = rawRoot.Settings && typeof rawRoot.Settings === 'object'
-      const source     = hasWrapper ? rawRoot.Settings : rawRoot
-      rawWrapper.value = hasWrapper ? rawRoot : null
-
-      // ★ 严格以文件实际内容为准，不补充 schema 默认值
-      //   · 保存时只会写回文件原有的字段，不会引入当前版本没有的键
-      configData.value = { ...source }
-      configLoaded.value = true
-      modified.value     = false
-      loadError.value    = ''
-      if (!activeCat.value && categories.value.length > 0) {
-        activeCat.value = categories.value[0]   // 默认"全部"
-      }
+      applyConfigRoot(rawRoot, { markModified: false, updateRaw: true })
     } catch (err) {
       loadError.value = `JSON 解析失败: ${err.message}`
     }
@@ -345,6 +663,9 @@ watch([activeServerKey, () => props.configFile], ([key]) => {
   modified.value     = false
   configData.value   = {}
   rawWrapper.value   = null
+  rawJsonText.value  = ''
+  jsonError.value    = ''
+  jsonErrorPos.value = null
   activeCat.value    = ''
   loadError.value    = ''
   if (props.agentOnline) loadConfig()
@@ -440,6 +761,48 @@ watch(() => props.agentOnline, (online) => {
 }
 .cfg-toast-close:hover { opacity: 1; }
 
+/* ── 编辑模式 ── */
+.cfg-mode-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px 0;
+  flex-shrink: 0;
+}
+.cfg-mode-tabs {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  background: #e2e8f0;
+  border-radius: 8px;
+}
+.cfg-mode-btn {
+  border: none;
+  background: transparent;
+  color: #475569;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cfg-mode-btn.active {
+  background: #fff;
+  color: #1d4ed8;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+.cfg-format-btn {
+  padding: 6px 12px;
+}
+.cfg-json-error {
+  min-width: 0;
+  color: #dc2626;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── 搜索框 ── */
 .cfg-search-bar {
   display: flex; align-items: center; gap: 8px;
@@ -496,5 +859,188 @@ watch(() => props.agentOnline, (online) => {
 }
 .cfg-field-row {
   margin-bottom: 4px;
+}
+
+/* ── JSON 高亮编辑器 ── */
+.cfg-json-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 24px 24px;
+  overflow: hidden;
+}
+.cfg-json-editor {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-height: 320px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #0f172a;
+  overflow: hidden;
+}
+.cfg-json-editor.invalid {
+  border-color: #fca5a5;
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.16);
+}
+.cfg-json-gutter {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 2;
+  width: 48px;
+  padding: 16px 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-right: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.96);
+  color: #64748b;
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7875;
+  text-align: right;
+}
+.cfg-json-gutter span {
+  display: block;
+  height: 21.45px;
+  padding: 0 10px 0 4px;
+  box-sizing: border-box;
+}
+.cfg-json-gutter span.error {
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.18);
+  font-weight: 700;
+}
+.cfg-json-highlight,
+.cfg-json-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 16px 18px 16px 64px;
+  border: none;
+  box-sizing: border-box;
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+.cfg-json-highlight {
+  color: #cbd5e1;
+  pointer-events: none;
+}
+.cfg-json-highlight code {
+  font: inherit;
+}
+.cfg-json-highlight :deep(.json-line) {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  min-height: 1.65em;
+}
+.cfg-json-highlight :deep(.json-line.is-error) {
+  background: rgba(248, 113, 113, 0.16);
+  box-shadow: inset 3px 0 0 #f87171;
+}
+.cfg-json-input {
+  resize: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: #f8fafc;
+  -webkit-text-fill-color: transparent;
+}
+.cfg-json-input::selection {
+  background: rgba(59, 130, 246, 0.35);
+}
+.cfg-json-input::-webkit-scrollbar,
+.cfg-json-highlight::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.cfg-json-input::-webkit-scrollbar-thumb,
+.cfg-json-highlight::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+}
+.cfg-json-highlight :deep(.json-key) { color: #93c5fd; }
+.cfg-json-highlight :deep(.json-string) { color: #86efac; }
+.cfg-json-highlight :deep(.json-number) { color: #fbbf24; }
+.cfg-json-highlight :deep(.json-bool) { color: #f0abfc; }
+.cfg-json-highlight :deep(.json-null) { color: #94a3b8; }
+.cfg-json-highlight :deep(.json-muted) { color: #64748b; }
+.cfg-json-err {
+  flex-shrink: 0;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #7f1d1d;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.cfg-json-err-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.cfg-json-err-msg {
+  color: #991b1b;
+}
+.cfg-json-err-meta {
+  margin-top: 2px;
+  color: #b91c1c;
+}
+.cfg-json-err-jump {
+  flex-shrink: 0;
+  border: 1px solid #f87171;
+  background: #fff;
+  color: #b91c1c;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cfg-json-err-jump:hover {
+  background: #fee2e2;
+}
+.cfg-json-err-context {
+  margin-top: 8px;
+  padding: 6px 0;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff;
+  overflow-x: auto;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+}
+.cfg-json-err-row {
+  display: flex;
+  min-width: max-content;
+  white-space: pre;
+  color: #111827;
+}
+.cfg-json-err-row.error {
+  background: #fee2e2;
+}
+.cfg-json-err-row code {
+  font: inherit;
+}
+.cfg-json-err-no {
+  width: 42px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  text-align: right;
+  color: #94a3b8;
+  user-select: none;
+}
+.cfg-json-err-caret code {
+  color: #dc2626;
+  font-weight: 700;
+  line-height: 1;
 }
 </style>

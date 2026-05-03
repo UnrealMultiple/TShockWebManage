@@ -368,6 +368,12 @@ const restarting   = ref(false)
 
 function sendWs(data) { window.__tshockSend?.(data) }
 
+function fetchStatus() {
+  if (!activeServerKey.value) return
+  sendWs({ type: 'get_status', msg_id: Date.now().toString(), timestamp: Date.now(),
+           payload: { agent_key: activeServerKey.value } })
+}
+
 function doStopServer(mode) {
   if (!canManageActiveServer.value || !activeServerKey.value) return
   stopping.value    = true
@@ -389,6 +395,8 @@ const worldProgress  = ref(null)   // 首领通关进度
 const playerStats    = ref(null)   // 死亡/在线时长列表
 const leaderboardTab = ref('time')
 let   playerStatsTimer = null
+let   playerPositionsTimer = null
+let   dashMapRefreshTimer = null
 const minimapCanvas   = ref(null)
 const minimapViewport = ref(null)
 const dashMapImg      = ref(null)   // Base64 编码的 PNG 字符串
@@ -402,6 +410,7 @@ const mapPanY         = ref(0)
 const mapDragging     = ref(false)
 const selectedPlayer  = ref(null)
 let   pendingDashMapId = null
+let   pendingDashMapSilent = false
 let   _dragStartX = 0, _dragStartY = 0, _panStartX = 0, _panStartY = 0
 
 const _colorCache = {}
@@ -672,6 +681,39 @@ function stopPlayerStatsPolling() {
   playerStatsTimer = null
 }
 
+function fetchPlayerPositions() {
+  if (!activeServerKey.value) return
+  sendWs({ type: 'get_player_positions', msg_id: `pos-${Date.now()}`, timestamp: Date.now(),
+           payload: { agent_key: activeServerKey.value } })
+}
+
+function startPlayerPositionsPolling() {
+  stopPlayerPositionsPolling()
+  if (!props.agentOnline || !activeServerKey.value) return
+  fetchPlayerPositions()
+  playerPositionsTimer = setInterval(fetchPlayerPositions, 3000)
+}
+
+function stopPlayerPositionsPolling() {
+  if (!playerPositionsTimer) return
+  clearInterval(playerPositionsTimer)
+  playerPositionsTimer = null
+}
+
+function startDashMapRefreshPolling() {
+  stopDashMapRefreshPolling()
+  if (!props.agentOnline || !activeServerKey.value || !canManageActiveServer.value) return
+  dashMapRefreshTimer = setInterval(() => {
+    if (dashMapImg.value && !loadingDashMap.value) fetchDashMap(true)
+  }, 15000)
+}
+
+function stopDashMapRefreshPolling() {
+  if (!dashMapRefreshTimer) return
+  clearInterval(dashMapRefreshTimer)
+  dashMapRefreshTimer = null
+}
+
 function drawMinimap() {
   const canvas = minimapCanvas.value
   if (!canvas) return
@@ -820,13 +862,17 @@ function toggleSelectPlayer(name) {
   drawMinimap()
 }
 
-function fetchDashMap() {
+function fetchDashMap(silent = false) {
+  silent = silent === true
   if (!activeServerKey.value) return
-  loadingDashMap.value = true
-  dashMapImg.value    = null
-  dashMapEl.value     = null
-  resetMapView()
+  if (!silent) {
+    loadingDashMap.value = true
+    dashMapImg.value    = null
+    dashMapEl.value     = null
+    resetMapView()
+  }
   pendingDashMapId = `dash-map-${Date.now()}`
+  pendingDashMapSilent = silent
   window.__tshockSend?.({
     type: 'get_minimap', msg_id: pendingDashMapId,
     timestamp: Date.now(), payload: { agent_key: activeServerKey.value }
@@ -1029,6 +1075,22 @@ const {
 function openInventory(name) { _openInv(name, activeServerKey.value) }
 function onSaveInventory(slotMap) { _handleSaveInv(slotMap, activeServerKey.value) }
 
+function mergePlayerRuntime(players, world = null) {
+  if (!Array.isArray(players)) return
+  const previous = new Map((serverStats.value?.players || []).map((p) => [p.name, p]))
+  const mergedPlayers = players.map((p) => ({
+    ...(previous.get(p.name) || {}),
+    ...p,
+  }))
+  serverStats.value = {
+    ...(serverStats.value || {}),
+    online_players: mergedPlayers.length,
+    players: mergedPlayers,
+    ...(world ? { world } : {}),
+  }
+  drawMinimap()
+}
+
 function onWsMessage(e) {
   const pkt = e.detail
   if (pkt.type === 'server_ctrl_resp') {
@@ -1045,26 +1107,40 @@ function onWsMessage(e) {
     if (meta && meta !== activeServerKey.value) return
     loadingDashMap.value = false
     if (pkt.payload?.ref_id !== pendingDashMapId) return
+    const silentMapRefresh = pendingDashMapSilent
     pendingDashMapId = null
+    pendingDashMapSilent = false
     if (!pkt.payload?.success) { console.warn('[Dashboard minimap]', pkt.payload?.msg); return }
     dashMapW.value = pkt.payload.world_width
     dashMapH.value = pkt.payload.world_height
     dashMapImg.value = pkt.payload.img
     saveMapCache(pkt.payload.img, pkt.payload.world_width, pkt.payload.world_height)
     const img = new Image()
-    img.onload = () => { dashMapEl.value = img; drawMinimap(); fitMapToViewport() }
+    img.onload = () => {
+      dashMapEl.value = img
+      drawMinimap()
+      if (!silentMapRefresh) fitMapToViewport()
+    }
     img.src = `data:image/png;base64,${pkt.payload.img}`
     if (pkt.payload.players) {
-      serverStats.value = {
-        ...(serverStats.value || {}),
-        players: pkt.payload.players,
-        world: { width: pkt.payload.world_width, height: pkt.payload.world_height }
-      }
+      mergePlayerRuntime(
+        pkt.payload.players,
+        { width: pkt.payload.world_width, height: pkt.payload.world_height }
+      )
     }
   } else if (pkt.type === 'world_progress_resp') {
     if (pkt.payload?.success) worldProgress.value = pkt.payload.progress
   } else if (pkt.type === 'player_stats_resp') {
     if (pkt.payload?.success) playerStats.value = normalizePlayerStats(pkt.payload.stats)
+  } else if (pkt.type === 'player_positions_resp') {
+    const meta = pkt.metadata?.agent_key
+    if (meta && meta !== activeServerKey.value) return
+    if (pkt.payload?.success) {
+      mergePlayerRuntime(
+        pkt.payload.players,
+        { width: pkt.payload.world_width, height: pkt.payload.world_height }
+      )
+    }
   } else if (pkt.type === 'get_inventory_resp') {
     const p = pkt.payload || {}
     // 玩家操作面板拉取 ssc 信息
@@ -1091,11 +1167,16 @@ function onWsMessage(e) {
 
 watch(() => props.agentOnline, (val) => {
   if (val && activeServerKey.value) {
+    fetchStatus()
     fetchWorldProgress()
     fetchPlayerStats()
     startPlayerStatsPolling()
+    startPlayerPositionsPolling()
+    startDashMapRefreshPolling()
   } else if (!val) {
     stopPlayerStatsPolling()
+    stopPlayerPositionsPolling()
+    stopDashMapRefreshPolling()
     serverStats.value    = null
     worldProgress.value  = null
     playerStats.value    = null
@@ -1120,12 +1201,18 @@ watch(activeServerKey, () => {
   dashMapEl.value      = null
   loadingDashMap.value = false
   pendingDashMapId     = null
+  pendingDashMapSilent = false
   selectedPlayer.value = null
   resetMapView()
+  stopPlayerPositionsPolling()
+  stopDashMapRefreshPolling()
   if (props.agentOnline && activeServerKey.value) {
+    fetchStatus()
     fetchWorldProgress()
     fetchPlayerStats()
     startPlayerStatsPolling()
+    startPlayerPositionsPolling()
+    startDashMapRefreshPolling()
     nextTick(() => loadMapCache())
   } else {
     stopPlayerStatsPolling()
@@ -1135,6 +1222,8 @@ watch(activeServerKey, () => {
 
 watch([activeServer, canManageActiveServer], () => {
   loadDashboardOwnershipContext()
+  if (props.agentOnline && activeServerKey.value) startDashMapRefreshPolling()
+  else stopDashMapRefreshPolling()
 })
 
 onMounted(() => {
@@ -1142,13 +1231,18 @@ onMounted(() => {
   loadMapCache()
   loadDashboardOwnershipContext()
   if (props.agentOnline && activeServerKey.value) {
+    fetchStatus()
     fetchWorldProgress()
     fetchPlayerStats()
     startPlayerStatsPolling()
+    startPlayerPositionsPolling()
+    startDashMapRefreshPolling()
   }
 })
 onUnmounted(() => {
   stopPlayerStatsPolling()
+  stopPlayerPositionsPolling()
+  stopDashMapRefreshPolling()
   window.removeEventListener('ws-message', onWsMessage)
 })
 

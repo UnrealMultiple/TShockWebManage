@@ -40,32 +40,34 @@ namespace TerrariaManagerAgent
 
                 // 1. 初始化模块
                 _wsService = new WebSocketService(config.BackendUrl, config.AgentKey);
-                _cmdHandler = new CommandHandler(_wsService);
                 _runtimeService = new RuntimeBroadcastService(_wsService);
+                _cmdHandler = new CommandHandler(_wsService, _runtimeService);
                 AgentLog.SetDebugEnabled(config.DebugEnabled);
                 CommandHandler.SetAuditLevel(config.AuditLevel);
                 _currentBackendUrl = config.BackendUrl ?? string.Empty;
                 _currentAgentKey = config.AgentKey ?? string.Empty;
 
-                // 2. 注册消息接收回调：当 WS 收到消息时，交给 CommandHandler 处理
+                // 2. 初始化 Agent 本地数据库
+                AgentLocalStore.Init();
+                StatsTracker.Init();
+
+                // 3. 注册消息接收回调：当 WS 收到消息时，交给 CommandHandler 处理
                 _wsService.OnMessageReceived += _cmdHandler.ProcessRawMessage;
 
-                // 3. 异步启动 WebSocket 连接循环
+                // 4. 异步启动 WebSocket 连接循环
                 _ = _wsService.StartAsync();
 
-                // 4. 启动周期任务
+                // 5. 启动周期任务
                 _ = Task.Run(() => _runtimeService.StatusBroadcastLoop(_pluginCts.Token));
                 _ = Task.Run(() => _runtimeService.DeathDetectionLoop(_pluginCts.Token));
 
-                // 5. 注册 TShock 钩子
+                // 6. 注册 TShock 钩子
                 ServerApi.Hooks.ServerChat.Register(this, _runtimeService.OnChat);
                 ServerApi.Hooks.ServerJoin.Register(this, _runtimeService.OnPlayerJoin);
                 ServerApi.Hooks.ServerLeave.Register(this, _runtimeService.OnPlayerLeave);
+                PlayerHooks.PlayerPostLogin += _runtimeService.OnPlayerPostLogin;
+                PlayerHooks.PlayerLogout += _runtimeService.OnPlayerLogout;
                 GeneralHooks.ReloadEvent += OnReload;
-
-                // 6. 初始化 Agent 本地数据库
-                AgentLocalStore.Init();
-                StatsTracker.Init();
 
                 // 7. 如果是重启后首次启动，还原启动脚本（移除临时循环）
                 StartupScriptService.CleanupRestartScript();
@@ -95,6 +97,8 @@ namespace TerrariaManagerAgent
                         ServerApi.Hooks.ServerChat.Deregister(this, _runtimeService.OnChat);
                         ServerApi.Hooks.ServerJoin.Deregister(this, _runtimeService.OnPlayerJoin);
                         ServerApi.Hooks.ServerLeave.Deregister(this, _runtimeService.OnPlayerLeave);
+                        PlayerHooks.PlayerPostLogin -= _runtimeService.OnPlayerPostLogin;
+                        PlayerHooks.PlayerLogout -= _runtimeService.OnPlayerLogout;
                     }
                     GeneralHooks.ReloadEvent -= OnReload;
 

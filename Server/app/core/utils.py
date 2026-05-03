@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 import time
 import uuid
@@ -40,16 +41,14 @@ def get_user_permissions(email: str) -> Set[str]:
     permissions = set()
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         # 获取用户所属的组
-        row = conn.execute("SELECT id FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone()
+        row = conn.execute("SELECT id, access_group_id FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone()
         if not row:
             return permissions
-        user_id = row[0]
-        
-        # 递归检查组权限 (支持 RBAC 继承)
-        groups_to_check = []
-        rows = conn.execute("SELECT group_id FROM account_role_members WHERE user_id=?", (user_id,)).fetchall()
-        for r in rows:
-            groups_to_check.append(r[0])
+        access_group_id = row[1]
+        if not access_group_id:
+            return permissions
+
+        groups_to_check = [access_group_id]
             
         checked_groups = set()
         while groups_to_check:
@@ -58,15 +57,23 @@ def get_user_permissions(email: str) -> Set[str]:
                 continue
             checked_groups.add(gid)
             
-            # 获取当前组权限
-            perms = conn.execute("SELECT permission FROM account_role_permissions WHERE group_id=?", (gid,)).fetchall()
-            for p in perms:
-                permissions.add(p[0])
+            group = conn.execute(
+                "SELECT permissions, parent_group_id FROM AccountAccessGroups WHERE id=?",
+                (gid,),
+            ).fetchone()
+            if not group:
+                continue
+            try:
+                parsed = json.loads(group[0] or "[]")
+                if isinstance(parsed, list):
+                    for p in parsed:
+                        if p:
+                            permissions.add(str(p))
+            except Exception:
+                pass
             
-            # 获取父组并加入待检查列表
-            parent = conn.execute("SELECT parent_id FROM account_roles WHERE id=?", (gid,)).fetchone()
-            if parent and parent[0]:
-                groups_to_check.append(parent[0])
+            if group[1]:
+                groups_to_check.append(group[1])
     
     return permissions
 

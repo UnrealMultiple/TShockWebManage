@@ -76,7 +76,7 @@ def _record_send_guard(email: str, scene: str, client_ip: str):
 
 def _has_platform_admin(conn: sqlite3.Connection) -> bool:
     return conn.execute(
-        "SELECT 1 FROM platform_members WHERE is_platform_admin = 1 LIMIT 1"
+        "SELECT 1 FROM users u JOIN AccountAccessGroups g ON g.id = u.access_group_id WHERE g.name='superadmin' LIMIT 1"
     ).fetchone() is not None
 
 
@@ -140,14 +140,10 @@ async def api_register(req: RegisterReq):
     try:
         with sqlite3.connect(AUTH_DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO users(email, pw_hash, salt, created_at) VALUES(?,?,?,?)",
-                         (key, p["pw_hash"], p["salt"], int(time.time())))
-            uid = cursor.lastrowid
-            
-            # 默认赋予 'default' 角色
-            grow = cursor.execute("SELECT id FROM account_roles WHERE name='default'").fetchone()
-            if grow:
-                cursor.execute("INSERT INTO account_role_members(user_id, group_id) VALUES(?,?)", (uid, grow[0]))
+            grow = cursor.execute("SELECT id FROM AccountAccessGroups WHERE name='default'").fetchone()
+            access_group_id = grow[0] if grow else None
+            cursor.execute("INSERT INTO users(email, pw_hash, salt, access_group_id, created_at) VALUES(?,?,?,?,?)",
+                         (key, p["pw_hash"], p["salt"], access_group_id, int(time.time())))
             
             conn.commit()
     except sqlite3.IntegrityError:
@@ -165,7 +161,7 @@ async def api_login(req: LoginReq):
         raise HTTPException(401, "账号或密码错误")
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         banned = conn.execute(
-            "SELECT 1 FROM account_restrictions WHERE user_id=? AND restriction_type='ban' AND is_active=1 LIMIT 1",
+            "SELECT 1 FROM AccountRestrictions WHERE user_id=? AND restriction_type='ban' AND is_active=1 LIMIT 1",
             (row[0],),
         ).fetchone()
     if banned:
@@ -244,20 +240,11 @@ async def api_bootstrap_register(req: RegisterReq, bootstrap_token: str):
         with sqlite3.connect(AUTH_DB_PATH) as conn:
             _ensure_bootstrap_open(conn)
             cursor = conn.cursor()
+            grow = cursor.execute("SELECT id FROM AccountAccessGroups WHERE name='superadmin'").fetchone()
+            access_group_id = grow[0] if grow else None
             cursor.execute(
-                "INSERT INTO users(email, pw_hash, salt, created_at) VALUES(?,?,?,?)",
-                (email, p["pw_hash"], p["salt"], int(time.time()))
-            )
-            uid = cursor.lastrowid
-
-            grow = cursor.execute("SELECT id FROM account_roles WHERE name='default'").fetchone()
-            if grow:
-                cursor.execute("INSERT INTO account_role_members(user_id, group_id) VALUES(?,?)", (uid, grow[0]))
-
-            now = int(time.time())
-            cursor.execute(
-                "INSERT INTO platform_members (user_id, is_platform_admin, permissions, created_at, updated_at) VALUES (?, 1, NULL, ?, ?)",
-                (uid, now, now),
+                "INSERT INTO users(email, pw_hash, salt, access_group_id, created_at) VALUES(?,?,?,?,?)",
+                (email, p["pw_hash"], p["salt"], access_group_id, int(time.time()))
             )
             conn.commit()
     except sqlite3.IntegrityError:
@@ -288,22 +275,13 @@ async def api_bootstrap_platform_admin(
         if not user:
             raise HTTPException(404, "当前用户不存在")
 
-        existing = conn.execute(
-            "SELECT id FROM platform_members WHERE user_id = ?",
-            (current_user_id,),
-        ).fetchone()
-
-        now = int(time.time())
-        if existing:
-            conn.execute(
-                "UPDATE platform_members SET is_platform_admin = 1, updated_at = ? WHERE user_id = ?",
-                (now, current_user_id),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO platform_members (user_id, is_platform_admin, permissions, created_at, updated_at) VALUES (?, 1, NULL, ?, ?)",
-                (current_user_id, now, now),
-            )
+        group = conn.execute("SELECT id FROM AccountAccessGroups WHERE name='superadmin'").fetchone()
+        if not group:
+            raise HTTPException(500, "超级管理员权限组不存在")
+        conn.execute(
+            "UPDATE users SET access_group_id=? WHERE id=?",
+            (group[0], current_user_id),
+        )
 
         conn.commit()
         return {

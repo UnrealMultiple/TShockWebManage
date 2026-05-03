@@ -365,21 +365,30 @@ namespace TerrariaManagerAgent.Services.Handlers
                 "config.json", "sscconfig.json", "motd.txt",
                 "rules.txt", "whitelist.txt", "tshock.pid", "auth.lck"
             };
-
             var files = new List<object>();
             var seen  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            bool IsConfigLike(string path)
+            bool IsJsonConfig(string path)
             {
                 return path.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
             }
 
+            bool IsSqliteDatabase(string path)
+            {
+                var ext = Path.GetExtension(path);
+                return ext.Equals(".sqlite", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".db", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".db3", StringComparison.OrdinalIgnoreCase);
+            }
+
             void AddConfigFile(string path)
             {
-                if (!IsConfigLike(path)) return;
+                var isJson = IsJsonConfig(path);
+                var isSqlite = IsSqliteDatabase(path);
+                if (!isJson && !isSqlite) return;
 
                 var info = new FileInfo(path);
-                if (excluded.Contains(info.Name)) return;
+                if (isJson && excluded.Contains(info.Name)) return;
                 if (!seen.Add(info.FullName)) return;
 
                 string? mdPath  = null;
@@ -389,7 +398,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 var candidates = new List<string> { baseName };
-                if (!string.Equals(strippedBase, baseName, StringComparison.OrdinalIgnoreCase))
+                if (isJson && !string.Equals(strippedBase, baseName, StringComparison.OrdinalIgnoreCase))
                     candidates.Add(strippedBase);
 
                 string? matchedAssembly = null;
@@ -410,7 +419,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                 }
                 else
                 {
-                    if (strippedBase != baseName)
+                    if (isJson && strippedBase != baseName)
                     {
                         var strippedMd = Path.Combine(pluginsDir, strippedBase + ".md");
                         if (File.Exists(strippedMd)) mdPath = strippedMd;
@@ -428,6 +437,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                     assembly_name = (object?)matchedAssembly,
                     is_plugin_library = isPluginLibrary,
                     md_path   = (object?)mdPath,
+                    file_type = isSqlite ? "sqlite" : "json",
                 });
             }
 
@@ -435,7 +445,7 @@ namespace TerrariaManagerAgent.Services.Handlers
             {
                 if (Directory.Exists(savePath))
                 {
-                    foreach (var f in Directory.GetFiles(savePath, "*.json", SearchOption.TopDirectoryOnly).OrderBy(x => x))
+                    foreach (var f in Directory.GetFiles(savePath, "*", SearchOption.TopDirectoryOnly).OrderBy(x => x))
                         AddConfigFile(f);
                 }
             }

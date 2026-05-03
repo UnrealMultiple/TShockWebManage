@@ -85,8 +85,10 @@ _DEFAULT_PANEL_GROUPS = [
         "is_builtin": 1,
         "permissions": [
             "tshock.*",
-            "panel.console", "panel.users", "panel.files",
-            "panel.database", "panel.dashboard", "panel.characters",
+            "panel.console", "panel.users",
+            "panel.files", "panel.files.write", "panel.files.delete",
+            "panel.database", "panel.database.write", "panel.database.sql",
+            "panel.dashboard", "panel.characters",
             "panel.membership.review", "panel.invites.manage",
             "panel.inventory.view.self", "panel.inventory.view.others",
             "panel.announcements", "panel.blacklist",
@@ -108,50 +110,81 @@ _DEFAULT_PANEL_GROUPS = [
 _LEGACY_GROUP_RENAME = {"owner": "服主", "admin": "管理", "default": "成员"}
 
 
-def _init_server_roles(server_id: int):
-    """为设备组（或旧服务器迁移）初始化/修复默认面板权限组（幂等）"""
-    with sqlite3.connect(AUTH_DB_PATH) as conn:
+def _init_server_access_groups(server_id: int, db: Optional[Session] = None, conn: Optional[sqlite3.Connection] = None):
+    """为服务器初始化/修复默认面板权限组（幂等）"""
+    if db is not None:
+        def execute(sql: str, params: dict):
+            return db.execute(text(sql), params)
+    else:
+        owns_conn = conn is None
+        if conn is None:
+            conn = sqlite3.connect(AUTH_DB_PATH)
+
+        def execute(sql: str, params: dict):
+            return conn.execute(sql, params)
+
+    try:
         # ① 将旧英文组名重命名为中文（保留成员分配关系）
         for old_name, new_name in _LEGACY_GROUP_RENAME.items():
-            old_row = conn.execute(
-                "SELECT id FROM server_roles WHERE server_id=? AND name=?",
-                (server_id, old_name),
+            old_row = execute(
+                "SELECT id FROM ServerAccessGroups WHERE server_id=:server_id AND name=:name",
+                {"server_id": server_id, "name": old_name},
             ).fetchone()
-            new_row = conn.execute(
-                "SELECT id FROM server_roles WHERE server_id=? AND name=?",
-                (server_id, new_name),
+            new_row = execute(
+                "SELECT id FROM ServerAccessGroups WHERE server_id=:server_id AND name=:name",
+                {"server_id": server_id, "name": new_name},
             ).fetchone()
             if old_row and not new_row:
                 # 直接重命名旧组
-                conn.execute(
-                    "UPDATE server_roles SET name=? WHERE id=?",
-                    (new_name, old_row[0]),
+                execute(
+                    "UPDATE ServerAccessGroups SET name=:name WHERE id=:id",
+                    {"name": new_name, "id": old_row[0]},
                 )
             elif old_row and new_row:
-                # 两者共存：将旧组成员迁移到新组，再删除旧组
-                conn.execute(
-                    "UPDATE OR IGNORE server_member_roles SET group_id=? WHERE group_id=?",
-                    (new_row[0], old_row[0]),
+                execute(
+                    "UPDATE ServerMembers SET access_group_id=:new_id WHERE access_group_id=:old_id",
+                    {"new_id": new_row[0], "old_id": old_row[0]},
                 )
-                conn.execute("DELETE FROM server_roles WHERE id=?", (old_row[0],))
+                execute("DELETE FROM ServerAccessGroups WHERE id=:id", {"id": old_row[0]})
         # ② 补充缺少的默认中文组
         for g in _DEFAULT_PANEL_GROUPS:
-            conn.execute(
-                "INSERT OR IGNORE INTO server_roles(server_id, name, description, is_builtin) "
-                "VALUES(?,?,?,?)",
-                (server_id, g["name"], g["description"], g["is_builtin"]),
+            permissions = json.dumps(g["permissions"], ensure_ascii=False)
+            execute(
+                """
+                INSERT OR IGNORE INTO ServerAccessGroups(server_id, name, description, is_builtin, permissions)
+                VALUES(:server_id, :name, :description, :is_builtin, :permissions)
+                """,
+                {
+                    "server_id": server_id,
+                    "name": g["name"],
+                    "description": g["description"],
+                    "is_builtin": g["is_builtin"],
+                    "permissions": permissions,
+                },
             )
-            row = conn.execute(
-                "SELECT id FROM server_roles WHERE server_id=? AND name=?",
-                (server_id, g["name"]),
+            row = execute(
+                "SELECT id FROM ServerAccessGroups WHERE server_id=:server_id AND name=:name",
+                {"server_id": server_id, "name": g["name"]},
             ).fetchone()
             gid = row[0]
-            for perm in g["permissions"]:
-                conn.execute(
-                    "INSERT OR IGNORE INTO server_role_permissions(group_id, permission) VALUES(?,?)",
-                    (gid, perm),
-                )
-        conn.commit()
+            execute(
+                """
+                UPDATE ServerAccessGroups
+                SET description=:description, is_builtin=:is_builtin, permissions=:permissions
+                WHERE id=:id
+                """,
+                {
+                    "description": g["description"],
+                    "is_builtin": g["is_builtin"],
+                    "permissions": permissions,
+                    "id": gid,
+                },
+            )
+        if db is None and owns_conn:
+            conn.commit()
+    finally:
+        if db is None and owns_conn:
+            conn.close()
 
 
 # ── 公共依赖 ─────────────────────────────────────────────────────
@@ -168,7 +201,7 @@ def _get_user_id(authorization: str = Header(...)) -> int:
         ).fetchone()
         if row:
             banned = conn.execute(
-                "SELECT 1 FROM account_restrictions WHERE user_id=? AND restriction_type='ban' AND is_active=1 LIMIT 1",
+                "SELECT 1 FROM AccountRestrictions WHERE user_id=? AND restriction_type='ban' AND is_active=1 LIMIT 1",
                 (int(row[0]),),
             ).fetchone()
     if not row:
@@ -196,7 +229,7 @@ def _get_user_id_by_email(email: str) -> Optional[int]:
 def _get_platform_setting(key: str, default: str = "") -> str:
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT value FROM platform_settings WHERE key=?",
+            "SELECT value FROM PlatformSettings WHERE key=?",
             (key,),
         ).fetchone()
     return str(row[0]) if row and row[0] is not None else default
@@ -211,14 +244,14 @@ def _has_panel_perm(server_id: int, user_id: int, permission: str) -> bool:
     """检查用户在指定服务器是否拥有给定面板权限（支持 * 及前缀通配 tshock.*）"""
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         pg_row = conn.execute(
-            "SELECT spg.id FROM server_member_roles smpg "
-            "JOIN server_roles spg ON spg.id = smpg.group_id "
-            "WHERE smpg.server_id=? AND smpg.user_id=?",
+            "SELECT g.id FROM ServerMembers sm "
+            "JOIN ServerAccessGroups g ON g.id = sm.access_group_id "
+            "WHERE sm.server_id=? AND sm.user_id=?",
             (server_id, user_id),
         ).fetchone()
         if not pg_row:
             return False
-        for p in _collect_panel_role_permissions(conn, server_id, pg_row[0]):
+        for p in _collect_panel_group_permissions(conn, server_id, pg_row[0]):
             if p == '*' or p == permission:
                 return True
             if p.endswith('.*'):
@@ -228,7 +261,7 @@ def _has_panel_perm(server_id: int, user_id: int, permission: str) -> bool:
         return False
 
 
-def _collect_panel_role_permissions(conn: sqlite3.Connection, server_id: int, group_id: int) -> List[str]:
+def _collect_panel_group_permissions(conn: sqlite3.Connection, server_id: int, group_id: int) -> List[str]:
     """递归收集权限组权限（包含继承父组），并避免循环依赖。"""
     seen = set()
     perms = set()
@@ -236,17 +269,21 @@ def _collect_panel_role_permissions(conn: sqlite3.Connection, server_id: int, gr
 
     while current_id and current_id not in seen:
         seen.add(current_id)
-        rows = conn.execute(
-            "SELECT permission FROM server_role_permissions WHERE group_id=?",
-            (current_id,),
-        ).fetchall()
-        for (perm,) in rows:
-            perms.add(perm)
         parent_row = conn.execute(
-            "SELECT parent_group_id FROM server_roles WHERE id=? AND server_id=?",
+            "SELECT permissions, parent_group_id FROM ServerAccessGroups WHERE id=? AND server_id=?",
             (current_id, server_id),
         ).fetchone()
-        current_id = parent_row[0] if parent_row else None
+        if not parent_row:
+            break
+        try:
+            parsed = json.loads(parent_row[0] or "[]")
+            if isinstance(parsed, list):
+                for perm in parsed:
+                    if perm:
+                        perms.add(str(perm))
+        except Exception:
+            pass
+        current_id = parent_row[1]
 
     return sorted(perms)
 
@@ -260,13 +297,34 @@ def _has_parent_cycle(conn: sqlite3.Connection, server_id: int, group_id: int, p
             return True
         seen.add(current_id)
         row = conn.execute(
-            "SELECT parent_group_id FROM server_roles WHERE id=? AND server_id=?",
+            "SELECT parent_group_id FROM ServerAccessGroups WHERE id=? AND server_id=?",
             (current_id, server_id),
         ).fetchone()
         if not row:
             break
         current_id = row[0]
     return False
+
+
+def _server_access_group_id(server_id: int, name: str, db: Optional[Session] = None, conn: Optional[sqlite3.Connection] = None) -> Optional[int]:
+    _init_server_access_groups(server_id, db=db, conn=conn)
+    if db is not None:
+        row = db.execute(
+            text("SELECT id FROM ServerAccessGroups WHERE server_id=:server_id AND name=:name"),
+            {"server_id": server_id, "name": name},
+        ).fetchone()
+    elif conn is not None:
+        row = conn.execute(
+            "SELECT id FROM ServerAccessGroups WHERE server_id=:server_id AND name=:name",
+            {"server_id": server_id, "name": name},
+        ).fetchone()
+    else:
+        with sqlite3.connect(AUTH_DB_PATH) as new_conn:
+            row = new_conn.execute(
+                "SELECT id FROM ServerAccessGroups WHERE server_id=:server_id AND name=:name",
+                {"server_id": server_id, "name": name},
+            ).fetchone()
+    return int(row[0]) if row else None
 
 
 def _caller_can_manage(server_id: int, user_id: int, db: Session, perm: str = "panel.users") -> bool:
@@ -385,12 +443,12 @@ def _validate_character_name_policy(server: Server, character_name: str):
 def _count_registered_characters(conn: sqlite3.Connection, agent_key: str, user_id: Optional[int] = None) -> int:
     if user_id is None:
         row = conn.execute(
-            "SELECT COUNT(*) FROM agent_character_bindings_cache WHERE agent_key=?",
+            "SELECT COUNT(*) FROM AgentCharacterBindingsCache WHERE agent_key=?",
             (agent_key,),
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT COUNT(*) FROM agent_character_bindings_cache WHERE agent_key=? AND user_id=?",
+            "SELECT COUNT(*) FROM AgentCharacterBindingsCache WHERE agent_key=? AND user_id=?",
             (agent_key, user_id),
         ).fetchone()
     return int(row[0] if row and row[0] is not None else 0)
@@ -410,7 +468,7 @@ def _blacklist_summary_for_user(conn: sqlite3.Connection, server_id: int, user_i
         SELECT
             b.id, b.reason, b.created_at,
             cb.email AS created_by_email
-        FROM agent_server_blacklist_cache b
+        FROM AgentServerBlacklistCache b
         LEFT JOIN users cb ON cb.id = b.created_by_user_id
         WHERE b.server_id=? AND b.target_user_id=? AND b.status='active'
         ORDER BY b.created_at DESC, b.id DESC
@@ -424,7 +482,7 @@ def _blacklist_summary_for_user(conn: sqlite3.Connection, server_id: int, user_i
             s.name AS source_server_name,
             sb.email AS submitted_by_email,
             rb.email AS reviewed_by_email
-        FROM cloud_blacklist_entries c
+        FROM CloudBlacklistEntries c
         LEFT JOIN servers s ON s.id = c.source_server_id
         LEFT JOIN users sb ON sb.id = c.submitted_by_user_id
         LEFT JOIN users rb ON rb.id = c.reviewed_by_user_id
@@ -522,7 +580,7 @@ def _blacklist_primary_reason(summary: dict, preferred_scope: str = "") -> str:
 async def _delete_user_server_local_state(db: Session, server_id: int, user_id: int, agent_key: str) -> None:
     if agent_key in manager.active_agents:
         rows = db.execute(
-            text("SELECT character_name FROM agent_character_bindings_cache WHERE agent_key = :agent_key AND user_id = :uid"),
+            text("SELECT character_name FROM AgentCharacterBindingsCache WHERE agent_key = :agent_key AND user_id = :uid"),
             {"agent_key": agent_key, "uid": user_id},
         ).fetchall()
         for row in rows:
@@ -535,12 +593,8 @@ async def _delete_user_server_local_state(db: Session, server_id: int, user_id: 
                 pass
 
     db.execute(
-        text("DELETE FROM agent_character_bindings_cache WHERE agent_key = :agent_key AND user_id = :uid"),
+        text("DELETE FROM AgentCharacterBindingsCache WHERE agent_key = :agent_key AND user_id = :uid"),
         {"agent_key": agent_key, "uid": user_id},
-    )
-    db.execute(
-        text("DELETE FROM server_member_roles WHERE server_id = :sid AND user_id = :uid"),
-        {"sid": server_id, "uid": user_id},
     )
 
 
@@ -586,16 +640,15 @@ def _server_to_out(s: Server, db: Session, user_id: Optional[int] = None) -> Ser
         membership = db.query(ServerMember).filter_by(server_id=s.id, user_id=user_id).first()
         if membership:
             server_role = membership.role.value
-        with sqlite3.connect(AUTH_DB_PATH) as _conn:
-            pg_row = _conn.execute(
-                "SELECT spg.id, spg.name FROM server_member_roles smpg "
-                "JOIN server_roles spg ON spg.id = smpg.group_id "
-                "WHERE smpg.server_id=? AND smpg.user_id=?",
-                (s.id, user_id),
-            ).fetchone()
-            if pg_row:
-                panel_group_name = pg_row[1]
-                panel_permissions = _collect_panel_role_permissions(_conn, s.id, pg_row[0])
+            if membership.access_group_id:
+                with sqlite3.connect(AUTH_DB_PATH) as _conn:
+                    pg_row = _conn.execute(
+                        "SELECT id, name FROM ServerAccessGroups WHERE id=? AND server_id=?",
+                        (membership.access_group_id, s.id),
+                    ).fetchone()
+                    if pg_row:
+                        panel_group_name = pg_row[1]
+                        panel_permissions = _collect_panel_group_permissions(_conn, s.id, pg_row[0])
 
     return ServerOut(
         id=s.id,
@@ -715,19 +768,19 @@ def claim_server(
             server.game_version = req.game_version or ""
             server.show_ip = req.show_ip
 
+        _init_server_access_groups(server.id, db=db)
         add_member(
             db=db,
             server_id=server.id,
             user_id=user_id,
             source="owner_claim",
             role=ServerMemberRole.owner,
+            access_group_id=_server_access_group_id(server.id, "服主", db=db),
             joined_by_user_id=user_id,
         )
 
         db.commit()
         db.refresh(server)
-        # 为服务器初始化默认面板权限组
-        _init_server_roles(server.id)
         return _server_to_out(server, db, user_id=user_id)
     except HTTPException:
         raise
@@ -796,7 +849,7 @@ def _submit_join_request(
 
         pending = conn.execute(
             """
-            SELECT id FROM server_member_requests
+            SELECT id FROM ServerMemberRequests
             WHERE server_id=? AND request_type='join' AND from_user_id=? AND status='pending'
             """,
             (server_id, applicant_user_id),
@@ -806,7 +859,7 @@ def _submit_join_request(
 
         cur = conn.execute(
             """
-            INSERT INTO server_member_requests(
+            INSERT INTO ServerMemberRequests(
                 server_id, request_type, from_user_id, to_user_id, message,
                 status, reviewed_by_user_id, reviewed_at,
                 review_note, withdrawn_at, expires_at, acted_at,
@@ -841,6 +894,7 @@ def _submit_join_request(
                 user_id=applicant_user_id,
                 source="join_request_approved",
                 role=ServerMemberRole.member,
+                access_group_id=_server_access_group_id(server_id, "成员", db=db),
                 source_ref_type="join_request",
                 source_ref_id=request_id,
                 joined_by_user_id=int(server.owner_id),
@@ -939,7 +993,7 @@ def list_join_requests(
                 r.review_note, r.created_at, r.updated_at, r.withdrawn_at
             FROM (
                 SELECT *, from_user_id AS applicant_user_id
-                FROM server_member_requests
+                FROM ServerMemberRequests
                 WHERE request_type='join'
             ) r
             JOIN users au ON au.id = r.applicant_user_id
@@ -971,7 +1025,7 @@ def withdraw_join_request(
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
             """
-            SELECT id, status FROM server_member_requests
+            SELECT id, status FROM ServerMemberRequests
             WHERE id=? AND server_id=? AND request_type='join' AND from_user_id=?
             """,
             (request_id, server_id, user_id),
@@ -983,7 +1037,7 @@ def withdraw_join_request(
 
         conn.execute(
             """
-            UPDATE server_member_requests
+            UPDATE ServerMemberRequests
             SET status='withdrawn', withdrawn_at=?, updated_at=?
             WHERE id=? AND request_type='join'
             """,
@@ -1017,7 +1071,7 @@ def approve_join_request(
             SELECT id, applicant_user_id, status
             FROM (
                 SELECT *, from_user_id AS applicant_user_id
-                FROM server_member_requests
+                FROM ServerMemberRequests
                 WHERE request_type='join'
             )
             WHERE id=? AND server_id=?
@@ -1039,6 +1093,7 @@ def approve_join_request(
                 user_id=applicant_user_id,
                 source="join_request_approved",
                 role=ServerMemberRole.member,
+                access_group_id=_server_access_group_id(server_id, "成员", db=db),
                 source_ref_type="join_request",
                 source_ref_id=request_id,
                 joined_by_user_id=user_id,
@@ -1053,7 +1108,7 @@ def approve_join_request(
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         conn.execute(
             """
-            UPDATE server_member_requests
+            UPDATE ServerMemberRequests
             SET status='approved', reviewed_by_user_id=?, reviewed_at=?, review_note=?, updated_at=?
             WHERE id=? AND request_type='join'
             """,
@@ -1099,7 +1154,7 @@ def reject_join_request(
             SELECT id, applicant_user_id, status
             FROM (
                 SELECT *, from_user_id AS applicant_user_id
-                FROM server_member_requests
+                FROM ServerMemberRequests
                 WHERE request_type='join'
             )
             WHERE id=? AND server_id=?
@@ -1115,7 +1170,7 @@ def reject_join_request(
         review_note = (req.note or "").strip()
         conn.execute(
             """
-            UPDATE server_member_requests
+            UPDATE ServerMemberRequests
             SET status='rejected', reviewed_by_user_id=?, reviewed_at=?, review_note=?, updated_at=?
             WHERE id=? AND request_type='join'
             """,
@@ -1171,7 +1226,7 @@ def create_server_invite(
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         pending = conn.execute(
             """
-            SELECT id FROM server_member_requests
+            SELECT id FROM ServerMemberRequests
             WHERE server_id=? AND request_type='invite' AND to_user_id=? AND status='pending'
             """,
             (server_id, invitee_user_id),
@@ -1181,7 +1236,7 @@ def create_server_invite(
 
         cur = conn.execute(
             """
-            INSERT INTO server_member_requests(
+            INSERT INTO ServerMemberRequests(
                 server_id, request_type, from_user_id, to_user_id,
                 message, status, expires_at, acted_at,
                 created_at, updated_at
@@ -1248,7 +1303,7 @@ def list_server_invites(
                 i.created_at, i.updated_at
             FROM (
                 SELECT *, from_user_id AS inviter_user_id, to_user_id AS invitee_user_id
-                FROM server_member_requests
+                FROM ServerMemberRequests
                 WHERE request_type='invite'
             ) i
             LEFT JOIN servers s ON s.id = i.server_id
@@ -1330,12 +1385,12 @@ def get_server(
         members_out: List[ServerMemberOut] = []
         with sqlite3.connect(AUTH_DB_PATH) as _conn:
             for m in db.query(ServerMember).filter_by(server_id=server_id).all():
-                pg_row = _conn.execute(
-                    "SELECT spg.id, spg.name FROM server_member_roles smpg "
-                    "JOIN server_roles spg ON spg.id = smpg.group_id "
-                    "WHERE smpg.server_id=? AND smpg.user_id=?",
-                    (server_id, m.user_id),
-                ).fetchone()
+                pg_row = None
+                if m.access_group_id:
+                    pg_row = _conn.execute(
+                        "SELECT id, name FROM ServerAccessGroups WHERE id=? AND server_id=?",
+                        (m.access_group_id, server_id),
+                    ).fetchone()
                 members_out.append(ServerMemberOut(
                     user_id=m.user_id,
                     email=_get_user_email(m.user_id),
@@ -1459,7 +1514,7 @@ def list_server_blacklist(
                 b.reason, b.status, b.created_by_user_id,
                 cu.email AS created_by_email,
                 b.created_at, b.removed_by_user_id, b.removed_at
-            FROM agent_server_blacklist_cache b
+            FROM AgentServerBlacklistCache b
             LEFT JOIN users cu ON cu.id = b.created_by_user_id
             WHERE {where_sql}
             ORDER BY b.created_at DESC, b.id DESC
@@ -1506,7 +1561,7 @@ async def add_server_blacklist(
         with sqlite3.connect(AUTH_DB_PATH) as conn:
             conn.execute(
                 """
-                INSERT INTO agent_server_blacklist_cache(
+                INSERT INTO AgentServerBlacklistCache(
                     server_id, target_user_id, target_email, reason,
                     status, created_by_user_id, created_at
                 ) VALUES(?,?,?,?,?,?,?)
@@ -1536,7 +1591,7 @@ async def remove_server_blacklist(
     )
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT target_user_id FROM agent_server_blacklist_cache WHERE id=? AND server_id=? AND status='active'",
+            "SELECT target_user_id FROM AgentServerBlacklistCache WHERE id=? AND server_id=? AND status='active'",
             (entry_id, server_id),
         ).fetchone()
     if not row:
@@ -1553,7 +1608,7 @@ async def remove_server_blacklist(
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         cur = conn.execute(
             """
-            UPDATE agent_server_blacklist_cache
+            UPDATE AgentServerBlacklistCache
             SET status='removed', removed_by_user_id=?, removed_at=?
             WHERE id=? AND server_id=? AND status='active'
             """,
@@ -1594,7 +1649,7 @@ def submit_cloud_blacklist(
         with sqlite3.connect(AUTH_DB_PATH) as conn:
             cur = conn.execute(
                 """
-                INSERT INTO cloud_blacklist_entries(
+                INSERT INTO CloudBlacklistEntries(
                     target_user_id, target_email, source_server_id,
                     reason, status, submitted_by_user_id, submitted_at
                 ) VALUES(?,?,?,?,?,?,?)
@@ -1625,24 +1680,14 @@ def dissolve_server(
             raise HTTPException(403, "仅 Owner 可解散服务器")
 
         agent_key = server.agent_key
-        group_ids = [
-            row[0] for row in db.execute(
-                text("SELECT id FROM server_roles WHERE server_id = :sid"),
-                {"sid": server_id},
-            ).fetchall()
-        ]
-        if group_ids:
-            placeholders = ",".join(str(int(v)) for v in group_ids)
-            db.execute(text(f"DELETE FROM server_role_permissions WHERE group_id IN ({placeholders})"))
-        db.execute(text("DELETE FROM server_member_roles WHERE server_id = :sid"), {"sid": server_id})
-        db.execute(text("DELETE FROM server_roles WHERE server_id = :sid"), {"sid": server_id})
-        db.execute(text("DELETE FROM server_member_requests WHERE server_id = :sid"), {"sid": server_id})
-        db.execute(text("DELETE FROM agent_server_blacklist_cache WHERE server_id = :sid"), {"sid": server_id})
-        db.execute(text("DELETE FROM cloud_blacklist_entries WHERE source_server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM ServerAccessGroups WHERE server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM ServerMemberRequests WHERE server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM AgentServerBlacklistCache WHERE server_id = :sid"), {"sid": server_id})
+        db.execute(text("DELETE FROM CloudBlacklistEntries WHERE source_server_id = :sid"), {"sid": server_id})
         db.execute(text("DELETE FROM messages WHERE server_id = :sid"), {"sid": server_id})
         db.execute(text("DELETE FROM announcements WHERE server_id = :sid"), {"sid": server_id})
         if agent_key:
-            db.execute(text("DELETE FROM agent_character_bindings_cache WHERE agent_key = :agent_key"), {"agent_key": agent_key})
+            db.execute(text("DELETE FROM AgentCharacterBindingsCache WHERE agent_key = :agent_key"), {"agent_key": agent_key})
         db.delete(server)
         db.commit()
         return {"ok": True}
@@ -1809,7 +1854,7 @@ def get_member_characters(
         raise HTTPException(404, "服务器不存在")
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         rows = conn.execute(
-            "SELECT character_name, registered_at FROM agent_character_bindings_cache "
+            "SELECT character_name, registered_at FROM AgentCharacterBindingsCache "
             "WHERE user_id=? AND agent_key=? ORDER BY registered_at DESC",
             (target_user_id, server.agent_key),
         ).fetchall()
@@ -1832,7 +1877,7 @@ def get_my_characters(
         raise HTTPException(404, "服务器不存在")
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         rows = conn.execute(
-            "SELECT character_name, registered_at FROM agent_character_bindings_cache "
+            "SELECT character_name, registered_at FROM AgentCharacterBindingsCache "
             "WHERE user_id=? AND agent_key=? ORDER BY registered_at DESC",
             (user_id, server.agent_key),
         ).fetchall()
@@ -1859,11 +1904,11 @@ async def delete_my_character(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT id FROM agent_character_bindings_cache WHERE user_id=? AND agent_key=? AND character_name=?",
+            "SELECT id FROM AgentCharacterBindingsCache WHERE user_id=? AND agent_key=? AND character_name=?",
             (user_id, server.agent_key, character_name),
         ).fetchone()
         if row:
-            conn.execute("DELETE FROM agent_character_bindings_cache WHERE id=?", (row[0],))
+            conn.execute("DELETE FROM AgentCharacterBindingsCache WHERE id=?", (row[0],))
             conn.commit()
 
     operator_email = _get_user_email(user_id)
@@ -1892,11 +1937,11 @@ async def delete_member_character(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT id FROM agent_character_bindings_cache WHERE user_id=? AND agent_key=? AND character_name=?",
+            "SELECT id FROM AgentCharacterBindingsCache WHERE user_id=? AND agent_key=? AND character_name=?",
             (target_user_id, server.agent_key, character_name),
         ).fetchone()
         if row:
-            conn.execute("DELETE FROM agent_character_bindings_cache WHERE id=?", (row[0],))
+            conn.execute("DELETE FROM AgentCharacterBindingsCache WHERE id=?", (row[0],))
             conn.commit()
 
     operator_email = _get_user_email(user_id)
@@ -2000,7 +2045,7 @@ def _resolve_character_binding(conn: sqlite3.Connection, agent_key: str, raw_nam
         return None
 
     row = conn.execute(
-        "SELECT id, character_name FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+        "SELECT id, character_name FROM AgentCharacterBindingsCache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
         (agent_key, trimmed),
     ).fetchone()
     if row:
@@ -2010,7 +2055,7 @@ def _resolve_character_binding(conn: sqlite3.Connection, agent_key: str, raw_nam
     canonical = _canonicalize_character_name(trimmed)
     if canonical and canonical.lower() != trimmed.lower():
         row = conn.execute(
-            "SELECT id, character_name FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+            "SELECT id, character_name FROM AgentCharacterBindingsCache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
             (agent_key, canonical),
         ).fetchone()
         if row:
@@ -2018,7 +2063,7 @@ def _resolve_character_binding(conn: sqlite3.Connection, agent_key: str, raw_nam
 
     # 3) 最后做一次模糊规范化比较，避免历史脏数据导致漏删
     rows = conn.execute(
-        "SELECT id, character_name FROM agent_character_bindings_cache WHERE agent_key=?",
+        "SELECT id, character_name FROM AgentCharacterBindingsCache WHERE agent_key=?",
         (agent_key,),
     ).fetchall()
     matched = [
@@ -2065,7 +2110,7 @@ async def _delete_game_account_impl(
         await delete_character_on_agent(server.agent_key, dispatch_name)
         with sqlite3.connect(AUTH_DB_PATH) as conn:
             conn.execute(
-                "DELETE FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+                "DELETE FROM AgentCharacterBindingsCache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
                 (server.agent_key, dispatch_name),
             )
             conn.commit()
@@ -2131,7 +2176,7 @@ async def bind_verify(
     real_username = req.username
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         existing = conn.execute(
-            "SELECT id FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+            "SELECT id FROM AgentCharacterBindingsCache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
             (server.agent_key, real_username),
         ).fetchone()
         if existing:
@@ -2151,7 +2196,7 @@ async def bind_verify(
     registered_at = int(agent_row.get("registered_at") or time.time())
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO agent_character_bindings_cache (user_id, agent_key, character_name, registered_at) "
+            "INSERT OR REPLACE INTO AgentCharacterBindingsCache (user_id, agent_key, character_name, registered_at) "
             "VALUES (?, ?, ?, ?)",
             (user_id, server.agent_key, real_username, registered_at),
         )
@@ -2178,7 +2223,7 @@ def get_character_map(
         rows = conn.execute(
             """
             SELECT gc.character_name, u.email
-            FROM agent_character_bindings_cache gc
+            FROM AgentCharacterBindingsCache gc
             JOIN users u ON u.id = gc.user_id
             WHERE gc.agent_key = ?
             """,
@@ -2224,7 +2269,7 @@ async def assign_character_owner(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         exists = conn.execute(
-            "SELECT id, user_id, character_name FROM agent_character_bindings_cache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
+            "SELECT id, user_id, character_name FROM AgentCharacterBindingsCache WHERE agent_key=? AND character_name=? COLLATE NOCASE",
             (server.agent_key, character_name),
         ).fetchone()
 
@@ -2233,7 +2278,7 @@ async def assign_character_owner(
             # 允许设置为“无”：删除现有绑定
             if exists:
                 bind_id, prev_user_id, canonical_name = exists
-                conn.execute("DELETE FROM agent_character_bindings_cache WHERE id=?", (bind_id,))
+                conn.execute("DELETE FROM AgentCharacterBindingsCache WHERE id=?", (bind_id,))
                 bound_name = canonical_name or character_name
                 action = "cleared"
             else:
@@ -2245,14 +2290,14 @@ async def assign_character_owner(
                 action = "unchanged"
                 if int(prev_user_id) != target_user_id:
                     conn.execute(
-                        "UPDATE agent_character_bindings_cache SET user_id=? WHERE id=?",
+                        "UPDATE AgentCharacterBindingsCache SET user_id=? WHERE id=?",
                         (target_user_id, bind_id),
                     )
                     action = "reassigned"
                 bound_name = canonical_name or character_name
             else:
                 conn.execute(
-                    "INSERT INTO agent_character_bindings_cache (user_id, agent_key, character_name, registered_at) "
+                    "INSERT INTO AgentCharacterBindingsCache (user_id, agent_key, character_name, registered_at) "
                     "VALUES (?, ?, ?, ?)",
                     (target_user_id, server.agent_key, character_name, int(time.time())),
                 )
@@ -2402,7 +2447,7 @@ def list_panel_join_requests(
                 r.review_note, r.created_at, r.updated_at, r.withdrawn_at
             FROM (
                 SELECT *, from_user_id AS applicant_user_id
-                FROM server_member_requests
+                FROM ServerMemberRequests
                 WHERE request_type='join'
             ) r
             JOIN users au ON au.id = r.applicant_user_id
@@ -2478,9 +2523,9 @@ def list_panel_groups(
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         groups = conn.execute(
             """
-            SELECT g.id, g.name, g.description, g.parent_group_id, p.name, g.is_builtin
-            FROM server_roles g
-            LEFT JOIN server_roles p ON p.id = g.parent_group_id
+            SELECT g.id, g.name, g.description, g.parent_group_id, p.name, g.is_builtin, g.permissions
+            FROM ServerAccessGroups g
+            LEFT JOIN ServerAccessGroups p ON p.id = g.parent_group_id
             WHERE g.server_id=?
             ORDER BY g.id
             """,
@@ -2491,26 +2536,28 @@ def list_panel_groups(
         needs_init = not {'服主', '管理', '成员'}.issubset(existing_names) \
                      or any(n in existing_names for n in ('owner', 'admin', 'default'))
         if needs_init:
-            _init_server_roles(server_id)
+            _init_server_access_groups(server_id, conn=conn)
             groups = conn.execute(
                 """
-                SELECT g.id, g.name, g.description, g.parent_group_id, p.name, g.is_builtin
-                FROM server_roles g
-                LEFT JOIN server_roles p ON p.id = g.parent_group_id
+                SELECT g.id, g.name, g.description, g.parent_group_id, p.name, g.is_builtin, g.permissions
+                FROM ServerAccessGroups g
+                LEFT JOIN ServerAccessGroups p ON p.id = g.parent_group_id
                 WHERE g.server_id=?
                 ORDER BY g.id
                 """,
                 (server_id,),
             ).fetchall()
         result = []
-        for gid, name, desc, parent_group_id, parent_group_name, is_builtin in groups:
-            direct_perms = conn.execute(
-                "SELECT permission FROM server_role_permissions WHERE group_id=? ORDER BY permission",
-                (gid,),
-            ).fetchall()
-            effective_perms = _collect_panel_role_permissions(conn, server_id, gid)
+        for gid, name, desc, parent_group_id, parent_group_name, is_builtin, perms_raw in groups:
+            try:
+                direct_perms = json.loads(perms_raw or "[]")
+                if not isinstance(direct_perms, list):
+                    direct_perms = []
+            except Exception:
+                direct_perms = []
+            effective_perms = _collect_panel_group_permissions(conn, server_id, gid)
             member_count = conn.execute(
-                "SELECT COUNT(*) FROM server_member_roles WHERE group_id=?",
+                "SELECT COUNT(*) FROM ServerMembers WHERE access_group_id=?",
                 (gid,),
             ).fetchone()[0]
             result.append({
@@ -2521,7 +2568,7 @@ def list_panel_groups(
                 "parent_group_id": parent_group_id,
                 "parent_group_name": parent_group_name,
                 "is_builtin": bool(is_builtin),
-                "permissions": [p[0] for p in direct_perms],
+                "permissions": [str(p) for p in direct_perms if p],
                 "effective_permissions": effective_perms,
                 "member_count": member_count,
             })
@@ -2545,22 +2592,17 @@ def create_panel_group(
         try:
             if req.parent_group_id is not None:
                 parent = conn.execute(
-                    "SELECT id FROM server_roles WHERE id=? AND server_id=?",
+                    "SELECT id FROM ServerAccessGroups WHERE id=? AND server_id=?",
                     (req.parent_group_id, server_id),
                 ).fetchone()
                 if not parent:
                     raise HTTPException(400, "父组不存在")
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO server_roles(server_id, name, description, parent_group_id, is_builtin) VALUES(?,?,?,?,0)",
-                (server_id, req.name.strip(), req.description, req.parent_group_id),
+                "INSERT INTO ServerAccessGroups(server_id, name, description, parent_group_id, is_builtin, permissions) VALUES(?,?,?,?,0,?)",
+                (server_id, req.name.strip(), req.description, req.parent_group_id, json.dumps(req.permissions, ensure_ascii=False)),
             )
             gid = cursor.lastrowid
-            for perm in req.permissions:
-                cursor.execute(
-                    "INSERT OR IGNORE INTO server_role_permissions(group_id, permission) VALUES(?,?)",
-                    (gid, perm.strip()),
-                )
             conn.commit()
         except sqlite3.IntegrityError:
             raise HTTPException(400, "权限组名已存在")
@@ -2583,7 +2625,7 @@ def update_panel_group(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT id, is_builtin FROM server_roles WHERE id=? AND server_id=?",
+            "SELECT id, is_builtin FROM ServerAccessGroups WHERE id=? AND server_id=?",
             (group_id, server_id),
         ).fetchone()
         if not row:
@@ -2595,7 +2637,7 @@ def update_panel_group(
                 raise HTTPException(400, "内置权限组不可修改名称")
             try:
                 conn.execute(
-                    "UPDATE server_roles SET name=? WHERE id=?",
+                    "UPDATE ServerAccessGroups SET name=? WHERE id=?",
                     (req.name.strip(), group_id),
                 )
             except sqlite3.IntegrityError:
@@ -2603,7 +2645,7 @@ def update_panel_group(
 
         if req.description is not None:
             conn.execute(
-                "UPDATE server_roles SET description=? WHERE id=?",
+                "UPDATE ServerAccessGroups SET description=? WHERE id=?",
                 (req.description, group_id),
             )
 
@@ -2611,14 +2653,14 @@ def update_panel_group(
         if parent_specified:
             if req.parent_group_id is None:
                 conn.execute(
-                    "UPDATE server_roles SET parent_group_id=NULL WHERE id=?",
+                    "UPDATE ServerAccessGroups SET parent_group_id=NULL WHERE id=?",
                     (group_id,),
                 )
             else:
                 if req.parent_group_id == group_id:
                     raise HTTPException(400, "父组不能是自己")
                 parent = conn.execute(
-                    "SELECT id FROM server_roles WHERE id=? AND server_id=?",
+                    "SELECT id FROM ServerAccessGroups WHERE id=? AND server_id=?",
                     (req.parent_group_id, server_id),
                 ).fetchone()
                 if not parent:
@@ -2626,17 +2668,15 @@ def update_panel_group(
                 if _has_parent_cycle(conn, server_id, group_id, req.parent_group_id):
                     raise HTTPException(400, "父组继承形成循环，请重新选择")
                 conn.execute(
-                    "UPDATE server_roles SET parent_group_id=? WHERE id=?",
+                    "UPDATE ServerAccessGroups SET parent_group_id=? WHERE id=?",
                     (req.parent_group_id, group_id),
                 )
 
         if req.permissions is not None:
-            conn.execute("DELETE FROM server_role_permissions WHERE group_id=?", (group_id,))
-            for perm in req.permissions:
-                conn.execute(
-                    "INSERT OR IGNORE INTO server_role_permissions(group_id, permission) VALUES(?,?)",
-                    (group_id, perm.strip()),
-                )
+            conn.execute(
+                "UPDATE ServerAccessGroups SET permissions=? WHERE id=?",
+                (json.dumps([p.strip() for p in req.permissions if p.strip()], ensure_ascii=False), group_id),
+            )
 
         conn.commit()
     return {"ok": True}
@@ -2657,7 +2697,7 @@ def delete_panel_group(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT is_builtin FROM server_roles WHERE id=? AND server_id=?",
+            "SELECT is_builtin FROM ServerAccessGroups WHERE id=? AND server_id=?",
             (group_id, server_id),
         ).fetchone()
         if not row:
@@ -2665,7 +2705,8 @@ def delete_panel_group(
         if row[0]:
             raise HTTPException(400, "内置权限组不可删除")
 
-        conn.execute("DELETE FROM server_roles WHERE id=?", (group_id,))
+        conn.execute("UPDATE ServerMembers SET access_group_id=NULL WHERE access_group_id=?", (group_id,))
+        conn.execute("DELETE FROM ServerAccessGroups WHERE id=?", (group_id,))
         conn.commit()
     return {"ok": True}
 
@@ -2688,7 +2729,7 @@ def assign_member_panel_group(
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         group = conn.execute(
-            "SELECT id FROM server_roles WHERE id=? AND server_id=?",
+            "SELECT id FROM ServerAccessGroups WHERE id=? AND server_id=?",
             (req.group_id, server_id),
         ).fetchone()
         if not group:
@@ -2696,14 +2737,10 @@ def assign_member_panel_group(
 
         # 查出组名，用来同步底层 role
         group_name = conn.execute(
-            "SELECT name FROM server_roles WHERE id=?", (req.group_id,)
+            "SELECT name FROM ServerAccessGroups WHERE id=?", (req.group_id,)
         ).fetchone()[0]
 
-        conn.execute(
-            "INSERT OR REPLACE INTO server_member_roles(server_id, user_id, group_id) VALUES(?,?,?)",
-            (server_id, target_user_id, req.group_id),
-        )
-        conn.commit()
+        target.access_group_id = req.group_id
 
     # 同步底层 role：服主组 → owner；管理组 → web_staff；其余 → member
     role_map = {"服主": ServerMemberRole.owner, "管理": ServerMemberRole.web_staff}
@@ -2712,7 +2749,7 @@ def assign_member_panel_group(
     srv = db.query(Server).filter_by(id=server_id).first()
     if target_user_id != srv.owner_id:
         target.role = new_role
-        db.commit()
+    db.commit()
 
     return {"ok": True}
 
@@ -2738,9 +2775,9 @@ def get_member_panel_group(
         row = conn.execute(
             """
             SELECT spg.id, spg.name, spg.description, spg.is_builtin
-            FROM server_member_roles smpg
-            JOIN server_roles spg ON spg.id = smpg.group_id
-            WHERE smpg.server_id=? AND smpg.user_id=?
+            FROM ServerMembers sm
+            JOIN ServerAccessGroups spg ON spg.id = sm.access_group_id
+            WHERE sm.server_id=? AND sm.user_id=?
             """,
             (server_id, target_user_id),
         ).fetchone()

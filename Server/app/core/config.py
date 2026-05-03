@@ -94,4 +94,3 @@ BOOTSTRAP_TOKEN = _cfg.get("平台初始化令牌", "")
 
 # 数据库路径
 AUTH_DB_PATH   = os.path.join(_base_dir, "auth.sqlite")
-TS_DB_PATH     = os.path.join(_base_dir, "..", "Agent", "bin", "TShock", "tshock", "tshock.sqlite")

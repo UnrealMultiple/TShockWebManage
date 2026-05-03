@@ -6,14 +6,13 @@ from typing import Any, Dict
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel
 
-from app.core.config import AUTH_DB_PATH, TS_DB_PATH
+from app.core.config import AUTH_DB_PATH
 from app.core.utils import has_permission, verify_token
 
 router = APIRouter(prefix="/api/db", tags=["database"])
 
 ALLOWED_DBS: Dict[str, str] = {
     "auth":    AUTH_DB_PATH,
-    "tshock":  TS_DB_PATH,
 }
 
 _IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')

@@ -40,7 +40,7 @@
           <svg class="plg-empty-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
           </svg>
-          <p>未找到插件配置文件（tshock/ 目录中的非系统 JSON 文件）</p>
+          <p>未找到插件配置文件（tshock/ 目录中的插件 JSON 或同名 SQLite 数据库）</p>
           <button class="plg-btn plg-btn-primary" @click="loadConfigs">重新扫描</button>
         </div>
         <template v-else>
@@ -60,6 +60,7 @@
                   @click="selectConfig(f)">
                   <div class="plg-cfg-item-name">{{ fileName(f.name) }}</div>
                   <div class="plg-cfg-item-meta">
+                    <span :class="['plg-filetype-badge', isSqliteConfig(f) ? 'sqlite' : 'json']">{{ configTypeLabel(f) }}</span>
                     <span v-if="isLibraryConfigFile(f)" class="plg-lib-badge">插件库</span>
                     <span class="plg-cfg-item-size">{{ formatSize(f.size) }}</span>
                   </div>
@@ -81,26 +82,62 @@
                 <div class="plg-cfg-editor-header">
                   <div class="plg-cfg-editor-title">
                     <span class="plg-cfg-file-name">{{ fileName(selectedConfig.name) }}</span>
+                    <span :class="['plg-filetype-badge', isSqliteConfig(selectedConfig) ? 'sqlite' : 'json']">{{ configTypeLabel(selectedConfig) }}</span>
                     <span v-if="isLibraryConfigFile(selectedConfig)" class="plg-lib-badge">TShockPlugin 插件库</span>
-                    <span v-if="cfgModified" class="plg-modified-badge">● 未保存</span>
+                    <span v-if="!isSqliteConfig(selectedConfig) && cfgModified" class="plg-modified-badge">● 未保存</span>
                   </div>
-                  <div class="plg-cfg-editor-actions">
+                  <div v-if="!isSqliteConfig(selectedConfig)" class="plg-cfg-editor-actions">
                     <div class="plg-mode-toggle">
                       <button :class="['plg-mode-btn', { active: editorMode === 'ui' }]" @click="editorMode = 'ui'">UI 模式</button>
                       <button :class="['plg-mode-btn', { active: editorMode === 'json' }]" @click="editorMode = 'json'">JSON 模式</button>
                     </div>
+                    <button v-if="editorMode === 'json'" class="plg-btn plg-btn-outline plg-btn-sm" @click="formatCfgJson">
+                      格式化
+                    </button>
                     <button class="plg-btn plg-btn-outline plg-btn-sm" @click="reloadCfg">
                       重新读取
                     </button>
                     <button class="plg-btn plg-btn-primary plg-btn-sm" @click="saveCfg"
-                      :disabled="!cfgModified || cfgSaving">
+                      :disabled="!cfgModified || cfgSaving || !!cfgJsonError">
                       {{ cfgSaving ? '保存中…' : '保存' }}
                     </button>
                   </div>
                 </div>
 
+                <div v-if="isSqliteConfig(selectedConfig)" class="plg-content-row">
+                  <div class="plg-editor-wrap">
+                    <DatabaseBrowserModal
+                      v-if="canBrowseDatabase"
+                      :key="selectedConfig.full_path"
+                      :file="selectedConfig"
+                      :active-server-key="activeServerKey"
+                      :can-write-database="canWriteDatabase"
+                      :can-use-raw-sql="canUseRawSql"
+                      embedded
+                    />
+                    <div v-else class="plg-error">缺少数据库浏览权限，无法打开 SQLite 配置。</div>
+                  </div>
+                  <div v-if="isLibraryConfigFile(selectedConfig) || selectedConfig.md_path" class="plg-doc-panel">
+                    <div class="plg-doc-header">
+                      <span class="plg-doc-header-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+                          <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+                        </svg>
+                        插件说明
+                      </span>
+                      <a v-if="isLibraryConfigFile(selectedConfig)" :href="pluginDocUrl(selectedConfig.assembly_name || selectedConfig.name)" target="_blank" class="plg-doc-link">在 GitHub 查看</a>
+                    </div>
+                    <div v-if="docLoading" class="plg-loading" style="margin:16px">
+                      <div class="plg-spinner"></div><span>加载文档中…</span>
+                    </div>
+                    <div v-else-if="docContent" class="plg-doc-content" v-html="renderedDoc"></div>
+                    <div v-else class="plg-doc-empty">暂无文档或加载失败</div>
+                  </div>
+                </div>
+
                 <!-- 读取中 -->
-                <div v-if="cfgLoading" class="plg-loading" style="margin:24px">
+                <div v-else-if="cfgLoading" class="plg-loading" style="margin:24px">
                   <div class="plg-spinner"></div><span>读取文件中…</span>
                 </div>
                 <div v-else-if="cfgError" class="plg-error">{{ cfgError }}</div>
@@ -122,25 +159,43 @@
                       无法解析 JSON，请切换到 JSON 模式修复后重试。
                     </div>
                     <!-- JSON 模式 -->
-                    <textarea v-else
-                      ref="cfgJsonTextarea"
-                      class="plg-json-editor"
-                      v-model="cfgText"
-                      @input="onCfgInput"
-                      spellcheck="false"
-                      placeholder="{}"
-                    ></textarea>
+                    <div v-else class="plg-json-editor" :class="{ invalid: !!cfgJsonError }">
+                      <div ref="cfgJsonGutter" class="plg-json-gutter" aria-hidden="true">
+                        <span v-for="line in cfgJsonLineNumbers" :key="line" :class="{ error: line === cfgJsonErrorLine }">{{ line }}</span>
+                      </div>
+                      <pre ref="cfgJsonHighlight" class="plg-json-highlight" aria-hidden="true"><code v-html="highlightedCfgJson"></code></pre>
+                      <textarea
+                        ref="cfgJsonTextarea"
+                        class="plg-json-input"
+                        v-model="cfgText"
+                        @input="onCfgInput"
+                        @scroll="syncCfgJsonScroll"
+                        @keydown.tab.prevent="insertCfgJsonIndent"
+                        spellcheck="false"
+                        placeholder="{}"
+                      ></textarea>
+                    </div>
                     <div v-if="editorMode === 'json' && cfgJsonError" class="plg-json-err">
-                      <div class="plg-json-err-title">JSON 语法错误</div>
+                      <div class="plg-json-err-head">
+                        <strong>JSON 格式不正确</strong>
+                        <button v-if="cfgJsonErrorPos" class="plg-json-err-jump" @click="jumpToJsonError">定位到错误</button>
+                      </div>
+                      <div class="plg-json-err-msg">{{ cfgJsonError }}</div>
                       <div v-if="cfgJsonErrorPos" class="plg-json-err-meta">
-                        第 {{ cfgJsonErrorPos.line }} 行，第 {{ cfgJsonErrorPos.col }} 列（position {{ cfgJsonErrorPos.idx }}）
-                        <button class="plg-json-err-jump" @click="jumpToJsonError">定位到错误</button>
+                        第 {{ cfgJsonErrorPos.line }} 行，第 {{ cfgJsonErrorPos.col }} 列附近
                       </div>
-                      <div v-if="cfgJsonErrorPos" class="plg-json-err-loc">
-                        <div class="plg-json-err-line">{{ getJsonErrorLine(cfgText, cfgJsonErrorPos) }}</div>
-                        <div class="plg-json-err-caret" :style="{ paddingLeft: `${Math.max(0, (cfgJsonErrorPos.col || 1) - 1)}ch` }">^</div>
+                      <div v-if="cfgJsonErrorContext.length" class="plg-json-err-context">
+                        <template v-for="row in cfgJsonErrorContext" :key="`${row.line}-${row.isCaret ? 'caret' : 'code'}`">
+                          <div v-if="!row.isCaret" :class="['plg-json-err-row', { error: row.isError }]">
+                            <span class="plg-json-err-no">{{ row.line }}</span>
+                            <code>{{ row.text || ' ' }}</code>
+                          </div>
+                          <div v-else class="plg-json-err-row plg-json-err-caret">
+                            <span class="plg-json-err-no"></span>
+                            <code :style="{ paddingLeft: `${Math.max(0, row.col - 1)}ch` }">^</code>
+                          </div>
+                        </template>
                       </div>
-                      <div class="plg-json-err-msg">{{ cfgJsonErrorRaw || cfgJsonError }}</div>
                     </div>
                   </div>
                   <!-- 文档面板（右侧，库插件或有本地 md） -->
@@ -412,8 +467,9 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, inject } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, inject, nextTick } from 'vue'
 import PluginJsonEditor from '../components/config/PluginJsonEditor.vue'
+import DatabaseBrowserModal from '@/components/files/DatabaseBrowserModal.vue'
 import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { marked } from 'marked'
@@ -426,7 +482,30 @@ const props = defineProps({
   agentOnline: { type: Boolean, default: false },
 })
 
+const activeServer    = inject('activeServer', ref(null))
 const activeServerKey = inject('activeServerKey', ref(''))
+const hasPerm         = inject('hasPerm', () => false)
+
+const serverCapabilities = computed(() =>
+  activeServer.value?.capabilities || activeServer.value?.agent_capabilities || null
+)
+
+function hasCapability(name) {
+  const caps = serverCapabilities.value
+  if (!caps) return true
+  if (Array.isArray(caps)) return caps.includes(name)
+  return caps[name] !== false
+}
+
+const canBrowseDatabase = computed(() =>
+  hasPerm('panel.database') && hasCapability('database')
+)
+const canWriteDatabase = computed(() =>
+  hasPerm('panel.database.write') && hasCapability('database_write')
+)
+const canUseRawSql = computed(() =>
+  hasPerm('panel.database.sql') && hasCapability('database_sql')
+)
 
 // ── Tab ────────────────────────────────────────────────────────────────
 const tab = ref('configs')
@@ -441,6 +520,8 @@ const selectedConfig = ref(null)
 const cfgLoading     = ref(false)
 const cfgText        = ref('')
 const cfgJsonTextarea = ref(null)
+const cfgJsonHighlight = ref(null)
+const cfgJsonGutter = ref(null)
 const cfgModified    = ref(false)
 const cfgSaving      = ref(false)
 const cfgError       = ref('')
@@ -460,6 +541,13 @@ const docModalContent = ref('')
 const cfgParsed = computed(() => {
   try { return cfgText.value.trim() ? JSON.parse(cfgText.value) : null } catch { return null }
 })
+const cfgJsonLineNumbers = computed(() => {
+  const count = Math.max(1, String(cfgText.value || '').split('\n').length)
+  return Array.from({ length: count }, (_, index) => index + 1)
+})
+const cfgJsonErrorLine = computed(() => cfgJsonErrorPos.value?.line || 0)
+const cfgJsonErrorContext = computed(() => getJsonErrorContext(cfgText.value, cfgJsonErrorPos.value))
+const highlightedCfgJson = computed(() => highlightJson(cfgText.value, cfgJsonErrorLine.value))
 
 // ── 安装 Tab 状态 ───────────────────────────────────────────────────────
 const cloudLoading   = ref(false)
@@ -543,6 +631,26 @@ function isLibraryPlugin(name) {
   return LIBRARY_NAMES.has(base) || LIBRARY_NAMES.has(stripLangSuffix(base))
 }
 
+function configExtension(file) {
+  return (file?.name || '').toString().split('.').pop()?.toLowerCase() || ''
+}
+
+function isSqliteConfig(file) {
+  const type = (file?.file_type || file?.kind || '').toString().toLowerCase()
+  if (type === 'sqlite' || type === 'sqlite_db') return true
+  return ['sqlite', 'db', 'db3'].includes(configExtension(file))
+}
+
+function configTypeLabel(file) {
+  return isSqliteConfig(file) ? 'SQLite' : 'JSON'
+}
+
+function configBaseName(file) {
+  const name = (file?.name || '').toString()
+  if (isSqliteConfig(file)) return name.replace(/\.(sqlite|db|db3)$/i, '')
+  return name.replace(/\.json$/i, '')
+}
+
 function isLibraryConfigFile(file) {
   if (!file) return false
   if (file.is_plugin_library) return true
@@ -553,7 +661,7 @@ function isLibraryConfigFile(file) {
   const name = (file.name || '').toString()
   if (!name) return false
 
-  const base = name.replace(/\.json$/i, '')
+  const base = configBaseName(file)
   const stripped = stripLangSuffix(base)
   if (cloudAsmSet.value.has(base.toLowerCase()) || cloudAsmSet.value.has(stripped.toLowerCase())) return true
 
@@ -581,6 +689,45 @@ const filteredCloudPlugins = computed(() => {
     getDesc(p).toLowerCase().includes(q)
   )
 })
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function highlightJsonLine(value) {
+  const text = String(value || '')
+  const tokenPattern = /("(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g
+  let html = ''
+  let cursor = 0
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0]
+    const index = match.index ?? 0
+    html += escapeHtml(text.slice(cursor, index))
+    let cls = 'json-number'
+    if (token.startsWith('"')) cls = /:\s*$/.test(token) ? 'json-key' : 'json-string'
+    else if (token === 'true' || token === 'false') cls = 'json-bool'
+    else if (token === 'null') cls = 'json-null'
+    html += `<span class="${cls}">${escapeHtml(token)}</span>`
+    cursor = index + token.length
+  }
+  html += escapeHtml(text.slice(cursor))
+  return html
+}
+
+function highlightJson(value, errorLine = 0) {
+  const text = String(value || '')
+  if (!text) return '<span class="json-line"><span class="json-muted">{}</span></span>'
+  return text.split('\n').map((line, index) => {
+    const lineNo = index + 1
+    const cls = lineNo === errorLine ? 'json-line is-error' : 'json-line'
+    return `<span class="${cls}">${highlightJsonLine(line) || '&nbsp;'}</span>`
+  }).join('')
+}
 
 // ── 初始加载 ──────────────────────────────────────────────────────────
 function loadPage() {
@@ -773,8 +920,15 @@ function selectConfig(f) {
   editorMode.value = 'ui'
   cfgError.value = ''
   cfgJsonError.value = ''
+  cfgJsonErrorRaw.value = ''
+  cfgJsonErrorPos.value = null
   docContent.value = ''
-  reloadCfg()
+  cfgText.value = ''
+  cfgLoading.value = false
+  cfgSaveResult.value = null
+  if (!isSqliteConfig(f)) {
+    reloadCfg()
+  }
   if (f.md_path) {
     loadLocalDoc(f.md_path)
   } else if (isLibraryConfigFile(f)) {
@@ -784,6 +938,7 @@ function selectConfig(f) {
 
 function reloadCfg() {
   if (!selectedConfig.value) return
+  if (isSqliteConfig(selectedConfig.value)) return
   cfgLoading.value = true
   cfgError.value = ''
   window.__tshockSend?.({
@@ -796,6 +951,7 @@ function reloadCfg() {
 
 function saveCfg() {
   if (!cfgModified.value || !selectedConfig.value) return
+  if (isSqliteConfig(selectedConfig.value)) return
   // 验证 JSON
   try { JSON.parse(cfgText.value) } catch (e) {
     setJsonErrorState(cfgText.value, e)
@@ -823,16 +979,62 @@ function onCfgInput() {
   }
 }
 
+function formatCfgJson() {
+  try {
+    const parsed = JSON.parse(cfgText.value)
+    cfgText.value = JSON.stringify(parsed, null, 2)
+    cfgModified.value = true
+    cfgJsonError.value = ''
+    cfgJsonErrorRaw.value = ''
+    cfgJsonErrorPos.value = null
+    nextTick(syncCfgJsonScroll)
+  } catch (e) {
+    setJsonErrorState(cfgText.value, e)
+    jumpToJsonError()
+  }
+}
+
+function syncCfgJsonScroll(event) {
+  const source = event?.target
+  const target = cfgJsonHighlight.value
+  if (!source || !target) return
+  target.scrollTop = source.scrollTop
+  target.scrollLeft = source.scrollLeft
+  if (cfgJsonGutter.value) cfgJsonGutter.value.scrollTop = source.scrollTop
+}
+
+function insertCfgJsonIndent(event) {
+  const el = event.target
+  const start = el.selectionStart
+  const end = el.selectionEnd
+  cfgText.value = cfgText.value.slice(0, start) + '  ' + cfgText.value.slice(end)
+  onCfgInput()
+  nextTick(() => {
+    el.selectionStart = start + 2
+    el.selectionEnd = start + 2
+    syncCfgJsonScroll({ target: el })
+  })
+}
+
 function setJsonErrorState(text, err) {
   const pos = parseJsonErrorPos(text, err)
   const raw = String(err?.message || '未知错误')
   cfgJsonErrorPos.value = pos
-  cfgJsonErrorRaw.value = raw
+  cfgJsonErrorRaw.value = friendlyJsonHint(raw)
   cfgJsonError.value = formatJsonError(text, err)
 }
 
 function parseJsonErrorPos(text, err) {
   const msg = String(err?.message || '')
+  const lineCol = msg.match(/line\s+(\d+)\s+column\s+(\d+)/i)
+  if (lineCol) {
+    const line = Number(lineCol[1])
+    const col = Number(lineCol[2])
+    const lines = String(text || '').split('\n')
+    const idx = lines.slice(0, Math.max(0, line - 1)).reduce((sum, lineText) => sum + lineText.length + 1, 0) + Math.max(0, col - 1)
+    return { idx: Math.min(idx, text.length), line, col }
+  }
+
   const m = msg.match(/position\s+(\d+)/i)
   if (!m) return null
 
@@ -847,18 +1049,49 @@ function parseJsonErrorPos(text, err) {
   return { idx: safeIdx, line, col }
 }
 
+function friendlyJsonHint(message) {
+  const msg = String(message || '')
+  if (/Expected double-quoted property name/i.test(msg)) {
+    return '对象属性名必须使用英文双引号，也可能是上一项末尾多了逗号。'
+  }
+  if (/Unexpected end of JSON input/i.test(msg)) {
+    return '内容还没有写完整，请检查结尾处是否缺少括号、方括号或引号。'
+  }
+  if (/Unterminated string/i.test(msg)) {
+    return '字符串没有正确结束，请检查是否缺少英文双引号。'
+  }
+  if (/Bad control character/i.test(msg)) {
+    return '字符串中包含未转义的换行或控制字符。'
+  }
+  if (/Unexpected token/i.test(msg) && /}/.test(msg)) {
+    return '可能存在多余逗号，或对象里缺少有效的键值对。'
+  }
+  if (/Unexpected string/i.test(msg)) {
+    return '可能缺少逗号，或键和值之间缺少冒号。'
+  }
+  if (/Unexpected non-whitespace character/i.test(msg)) {
+    return 'JSON 根节点后面还有多余内容。'
+  }
+  return '请检查逗号、冒号、英文双引号和括号是否成对。'
+}
+
 function formatJsonError(text, err) {
-  const raw = String(err?.message || '未知错误')
   const pos = parseJsonErrorPos(text, err)
-  if (!pos) return `JSON 格式错误: ${raw}`
-  return `第 ${pos.line} 行，第 ${pos.col} 列（position ${pos.idx}）`
+  const hint = friendlyJsonHint(err?.message)
+  if (!pos) return `JSON 格式不正确：${hint}`
+  return `JSON 格式不正确：第 ${pos.line} 行，第 ${pos.col} 列附近。${hint}`
 }
 
 function focusJsonError(pos) {
   if (!pos || !cfgJsonTextarea.value) return
   const ta = cfgJsonTextarea.value
+  const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 21
+  const colWidth = Math.max(7, (parseFloat(getComputedStyle(ta).fontSize) || 13) * 0.62)
   ta.focus()
+  ta.scrollTop = Math.max(0, (pos.line - 3) * lineHeight)
+  ta.scrollLeft = Math.max(0, (pos.col - 36) * colWidth)
   ta.setSelectionRange(pos.idx, pos.idx)
+  syncCfgJsonScroll({ target: ta })
 }
 
 function jumpToJsonError() {
@@ -866,17 +1099,43 @@ function jumpToJsonError() {
   focusJsonError(cfgJsonErrorPos.value)
 }
 
-function getJsonErrorLine(text, pos) {
-  if (!pos || !text) return ''
-  const lineIdx = Math.max(0, (pos.line || 1) - 1)
-  const lines = String(text).split('\n')
-  return lines[lineIdx] ?? ''
+function clampJsonContextLine(lineText, col = 1, isError = false) {
+  const text = String(lineText ?? '')
+  if (text.length <= 160) return { text, col }
+  if (!isError) return { text: `${text.slice(0, 157)}...`, col: 1 }
+  const safeCol = Math.max(1, col || 1)
+  const start = Math.max(0, safeCol - 81)
+  const end = Math.min(text.length, start + 160)
+  const prefix = start > 0 ? '...' : ''
+  const suffix = end < text.length ? '...' : ''
+  return {
+    text: `${prefix}${text.slice(start, end)}${suffix}`,
+    col: safeCol - start + prefix.length,
+  }
+}
+
+function getJsonErrorContext(text, pos, radius = 2) {
+  if (!pos) return []
+  const lines = String(text || '').split('\n')
+  const errorLine = Math.max(1, pos.line || 1)
+  const start = Math.max(1, errorLine - radius)
+  const end = Math.min(lines.length, errorLine + radius)
+  const rows = []
+  for (let lineNo = start; lineNo <= end; lineNo += 1) {
+    const isError = lineNo === errorLine
+    const lineInfo = clampJsonContextLine(lines[lineNo - 1] ?? '', pos.col || 1, isError)
+    rows.push({ line: lineNo, text: lineInfo.text, isError })
+    if (isError) rows.push({ line: lineNo, isCaret: true, col: lineInfo.col })
+  }
+  return rows
 }
 
 function onUiChange(newObj) {
   cfgText.value = JSON.stringify(newObj, null, 2)
   cfgModified.value = true
   cfgJsonError.value = ''
+  cfgJsonErrorRaw.value = ''
+  cfgJsonErrorPos.value = null
 }
 
 // ── 插件库文档加载（浏览器并发竞速多镜像） ───────────────────────────────
@@ -1030,11 +1289,13 @@ function goToPluginConfig(plugin) {
     setTimeout(() => { localResult.value = null }, 5000)
     return
   }
-  const match = configFiles.value.find(f => {
-    const base = f.name.replace(/\.json$/i, '')
+  const matches = configFiles.value.filter(f => {
+    if ((f.assembly_name || '').toString().toLowerCase() === asmLower) return true
+    const base = configBaseName(f)
     const stripped = stripLangSuffix(base)
     return stripped.toLowerCase() === asmLower || base.toLowerCase() === asmLower
   })
+  const match = matches.find(f => !isSqliteConfig(f)) || matches[0]
   if (match) {
     tab.value = 'configs'
     selectConfig(match)
@@ -1406,6 +1667,26 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   font-size: 10px; background: #e0f2fe; color: #0369a1;
   border: 1px solid #bae6fd; border-radius: 4px; padding: 0 5px; flex-shrink: 0;
 }
+.plg-filetype-badge {
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 4px;
+  padding: 0 5px;
+  border: 1px solid #d1d5db;
+  background: #f8fafc;
+  color: #475569;
+  flex-shrink: 0;
+}
+.plg-filetype-badge.sqlite {
+  background: #ecfdf5;
+  border-color: #bbf7d0;
+  color: #047857;
+}
+.plg-filetype-badge.json {
+  background: #f8fafc;
+  border-color: #dbe3ef;
+  color: #475569;
+}
 .plg-cfg-item-size { font-size: 11px; color: #94a3b8; }
 
 .plg-cfg-main {
@@ -1511,7 +1792,7 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   display: flex; border: 1px solid #e2e8f0; border-radius: 7px; overflow: hidden; flex-shrink: 0;
 }
 .plg-mode-btn {
-  padding: 4px 13px; font-size: 12px; font-weight: 500;
+  padding: 3px 9px; font-size: 11px; font-weight: 500;
   background: #fff; color: #64748b; border: none; cursor: pointer; transition: all .15s;
 }
 .plg-mode-btn + .plg-mode-btn { border-left: 1px solid #e2e8f0; }
@@ -1532,11 +1813,105 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   color: #92400e; font-size: 13px;
 }
 .plg-json-editor {
-  flex: 1; padding: 14px 16px; font-size: 13px; line-height: 1.6;
-  font-family: 'SFMono-Regular', Consolas, monospace;
-  border: none; outline: none; resize: none;
-  background: #fafafa; color: #1e293b;
+  position: relative;
+  flex: 1;
+  min-height: 320px;
+  margin: 10px 12px 0;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #0f172a;
+  overflow: hidden;
 }
+.plg-json-editor.invalid {
+  border-color: #fca5a5;
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.16);
+}
+.plg-json-gutter {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 2;
+  width: 48px;
+  padding: 16px 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-right: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.96);
+  color: #64748b;
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7875;
+  text-align: right;
+}
+.plg-json-gutter span {
+  display: block;
+  height: 21.45px;
+  padding: 0 10px 0 4px;
+  box-sizing: border-box;
+}
+.plg-json-gutter span.error {
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.18);
+  font-weight: 700;
+}
+.plg-json-highlight,
+.plg-json-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 16px 18px 16px 64px;
+  border: none;
+  box-sizing: border-box;
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+.plg-json-highlight {
+  color: #cbd5e1;
+  pointer-events: none;
+}
+.plg-json-highlight code {
+  font: inherit;
+}
+.plg-json-highlight :deep(.json-line) {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  min-height: 1.65em;
+}
+.plg-json-highlight :deep(.json-line.is-error) {
+  background: rgba(248, 113, 113, 0.16);
+  box-shadow: inset 3px 0 0 #f87171;
+}
+.plg-json-input {
+  resize: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: #f8fafc;
+  -webkit-text-fill-color: transparent;
+}
+.plg-json-input::selection {
+  background: rgba(59, 130, 246, 0.35);
+}
+.plg-json-input::-webkit-scrollbar,
+.plg-json-highlight::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.plg-json-input::-webkit-scrollbar-thumb,
+.plg-json-highlight::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+}
+.plg-json-highlight :deep(.json-key) { color: #93c5fd; }
+.plg-json-highlight :deep(.json-string) { color: #86efac; }
+.plg-json-highlight :deep(.json-number) { color: #fbbf24; }
+.plg-json-highlight :deep(.json-bool) { color: #f0abfc; }
+.plg-json-highlight :deep(.json-null) { color: #94a3b8; }
+.plg-json-highlight :deep(.json-muted) { color: #64748b; }
 .plg-json-err {
   padding: 10px 14px;
   font-size: 12.5px;
@@ -1547,41 +1922,58 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
   white-space: pre-wrap;
   flex-shrink: 0;
 }
-.plg-json-err-title {
-  font-size: 13px;
-  font-weight: 700;
+.plg-json-err-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 4px;
 }
 .plg-json-err-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  margin-top: 2px;
   margin-bottom: 4px;
   color: #991b1b;
 }
 .plg-json-err-msg {
   color: #7f1d1d;
 }
-.plg-json-err-loc {
+.plg-json-err-context {
   font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
   background: #fff;
   border: 1px solid #fecaca;
   border-radius: 6px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
+  padding: 6px 0;
+  margin-top: 8px;
   overflow-x: auto;
+  font-size: 12px;
 }
-.plg-json-err-line {
+.plg-json-err-row {
+  display: flex;
+  min-width: max-content;
   color: #111827;
   white-space: pre;
 }
-.plg-json-err-caret {
+.plg-json-err-row.error {
+  background: #fee2e2;
+}
+.plg-json-err-row code {
+  font: inherit;
+}
+.plg-json-err-no {
+  width: 42px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  text-align: right;
+  color: #94a3b8;
+  user-select: none;
+}
+.plg-json-err-caret code {
   color: #dc2626;
   font-weight: 700;
   line-height: 1;
-  white-space: pre;
 }
 .plg-json-err-jump {
+  flex-shrink: 0;
   border: 1px solid #f87171;
   background: #fff;
   color: #b91c1c;

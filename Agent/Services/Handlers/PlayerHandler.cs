@@ -2474,12 +2474,13 @@ namespace TerrariaManagerAgent.Services.Handlers
                 // 3. 将前端传入的格子合并覆盖（只覆盖有改动的格子，不影响其他格子）
                 foreach (var s in slotsArr)
                 {
-                    int idx = s["index"]?.Value<int>() ?? -1;
+                    if (s is not JObject slotObj) continue;
+                    int idx = slotObj["index"]?.Value<int>() ?? -1;
                     if (idx < 0 || idx >= totalSlots) continue;
-                    int netId = s["net_id"]?.Value<int>() ?? 0;
-                    int prefix = s["prefix"]?.Value<int>() ?? 0;
-                    int stack = s["stack"]?.Value<int>() ?? 0;
-                    int favorite = s["favorite"]?.Value<int>() ?? 0;
+                    int netId = slotObj["net_id"]?.Value<int>() ?? 0;
+                    int prefix = slotObj["prefix"]?.Value<int>() ?? 0;
+                    int stack = slotObj["stack"]?.Value<int>() ?? 0;
+                    int favorite = slotObj["favorite"]?.Value<int>() ?? 0;
                     if (netId < 0) netId = 0;
                     if (prefix < 0 || prefix > 83) prefix = 0;
                     if (stack < 0) stack = 0;

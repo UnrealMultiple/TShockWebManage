@@ -33,7 +33,7 @@ namespace TerrariaManagerAgent.Services
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = @"
-                    CREATE TABLE IF NOT EXISTS agent_player_stats (
+                    CREATE TABLE IF NOT EXISTS AgentPlayerStats (
                         name           TEXT NOT NULL COLLATE NOCASE,
                         deaths         INTEGER NOT NULL DEFAULT 0,
                         online_seconds INTEGER NOT NULL DEFAULT 0,
@@ -85,7 +85,7 @@ namespace TerrariaManagerAgent.Services
                 using var conn = OpenDb();
                 EnsureRow(conn, name);
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "UPDATE agent_player_stats SET online_seconds = online_seconds + @s WHERE name = @n COLLATE NOCASE";
+                cmd.CommandText = "UPDATE AgentPlayerStats SET online_seconds = online_seconds + @s WHERE name = @n COLLATE NOCASE";
                 cmd.Parameters.AddWithValue("@n", name);
                 cmd.Parameters.AddWithValue("@s", secs);
                 cmd.ExecuteNonQuery();
@@ -101,7 +101,7 @@ namespace TerrariaManagerAgent.Services
                 using var conn = OpenDb();
                 EnsureRow(conn, name);
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "UPDATE agent_player_stats SET deaths = deaths + 1 WHERE name = @n COLLATE NOCASE";
+                cmd.CommandText = "UPDATE AgentPlayerStats SET deaths = deaths + 1 WHERE name = @n COLLATE NOCASE";
                 cmd.Parameters.AddWithValue("@n", name);
                 cmd.ExecuteNonQuery();
             }
@@ -111,7 +111,7 @@ namespace TerrariaManagerAgent.Services
         private static void EnsureRow(SqliteConnection conn, string name)
         {
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "INSERT OR IGNORE INTO agent_player_stats(name, deaths, online_seconds) VALUES(@n, 0, 0)";
+            cmd.CommandText = "INSERT OR IGNORE INTO AgentPlayerStats(name, deaths, online_seconds) VALUES(@n, 0, 0)";
             cmd.Parameters.AddWithValue("@n", name);
             cmd.ExecuteNonQuery();
         }
@@ -124,7 +124,7 @@ namespace TerrariaManagerAgent.Services
             {
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT name, deaths, online_seconds FROM agent_player_stats";
+                cmd.CommandText = "SELECT name, deaths, online_seconds FROM AgentPlayerStats";
                 using var reader = cmd.ExecuteReader();
                 while (reader.Read())
                 {

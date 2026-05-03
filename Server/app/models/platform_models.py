@@ -11,14 +11,15 @@ from app.core.database import Base
 class User(Base):
     """
     用户表（仅用于 ORM 关联，不创建表）
-    映射 auth_db 中的 users 表
+    映射 auth_db 中的 Users 表
     """
-    __tablename__ = "users"
+    __tablename__ = "Users"
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(128), unique=True, nullable=False)
     pw_hash = Column(String(256), nullable=False)
     salt = Column(String(64), nullable=False)
+    access_group_id = Column(Integer, nullable=True)
     created_at = Column(Integer, nullable=False)
 
 
@@ -68,7 +69,7 @@ class AccountRestriction(Base):
     账号限制表
     记录对特定用户的限制（QQ号限制、封禁等）
     """
-    __tablename__ = "account_restrictions"
+    __tablename__ = "AccountRestrictions"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False)  # 被限制的用户 ID
@@ -89,7 +90,7 @@ class Report(Base):
     举报表
     记录用户举报的信息
     """
-    __tablename__ = "user_reports"
+    __tablename__ = "UserReports"
 
     id = Column(Integer, primary_key=True, index=True)
     reporter_id = Column(Integer, nullable=False)  # 举报人 user_id
@@ -114,7 +115,7 @@ class OperationLog(Base):
     操作日志表
     记录平台管理员的操作历史
     """
-    __tablename__ = "audit_logs"
+    __tablename__ = "AuditLogs"
 
     id = Column(Integer, primary_key=True, index=True)
     operator_id = Column(Integer, nullable=False)  # 操作人 user_id
@@ -134,7 +135,7 @@ class PlatformSettings(Base):
     平台设置表
     存储全局平台配置
     """
-    __tablename__ = "platform_settings"
+    __tablename__ = "PlatformSettings"
 
     key = Column(String(64), primary_key=True)
     value = Column(Text, nullable=True)
@@ -147,31 +148,13 @@ class PlatformSettings(Base):
     )
 
 
-class PlatformUser(Base):
-    """
-    平台用户表
-    记录平台管理员权限
-    """
-    __tablename__ = "platform_members"
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, nullable=False, unique=True, index=True)
-    is_platform_admin = Column(Boolean, nullable=False, default=False)  # 是否平台管理员
-    permissions = Column(Text, nullable=True)  # JSON 格式的权限列表
-    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
-    updated_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
-
-    # 关系（使用 foreign() 明确外键列）
-    user = relationship("User", primaryjoin="PlatformUser.user_id == foreign(User.id)", viewonly=True)
-
-
 class Announcement(Base):
     """
     公告表
     平台发布的通知公告
     target_type: 'server' 指定服务器 / 'account' 指定个体账户 / 'all' 所有账户
     """
-    __tablename__ = "announcements"
+    __tablename__ = "Announcements"
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(256), nullable=False)

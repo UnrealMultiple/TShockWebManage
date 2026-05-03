@@ -23,7 +23,7 @@ namespace TerrariaManagerAgent.Services
             {
                 using var conn = OpenDb();
                 ExecuteNonQuery(conn, @"
-                    CREATE TABLE IF NOT EXISTS agent_character_bindings (
+                    CREATE TABLE IF NOT EXISTS AgentCharacterBindings (
                         id             INTEGER PRIMARY KEY AUTOINCREMENT,
                         panel_user_id  INTEGER NOT NULL,
                         panel_email    TEXT NOT NULL DEFAULT '',
@@ -35,9 +35,9 @@ namespace TerrariaManagerAgent.Services
                     )");
                 ExecuteNonQuery(conn, @"
                     CREATE INDEX IF NOT EXISTS ix_agent_character_bindings_user
-                    ON agent_character_bindings(panel_user_id)");
+                    ON AgentCharacterBindings(panel_user_id)");
                 ExecuteNonQuery(conn, @"
-                    CREATE TABLE IF NOT EXISTS agent_server_blacklist_entries (
+                    CREATE TABLE IF NOT EXISTS AgentServerBlacklistEntries (
                         id                 INTEGER PRIMARY KEY AUTOINCREMENT,
                         target_user_id     INTEGER NOT NULL,
                         target_email       TEXT NOT NULL DEFAULT '',
@@ -52,10 +52,10 @@ namespace TerrariaManagerAgent.Services
                     )");
                 ExecuteNonQuery(conn, @"
                     CREATE INDEX IF NOT EXISTS ix_agent_blacklist_status
-                    ON agent_server_blacklist_entries(status, created_at DESC)");
+                    ON AgentServerBlacklistEntries(status, created_at DESC)");
                 ExecuteNonQuery(conn, @"
                     CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_blacklist_active_user
-                    ON agent_server_blacklist_entries(target_user_id)
+                    ON AgentServerBlacklistEntries(target_user_id)
                     WHERE status='active'");
             }
         }
@@ -84,7 +84,7 @@ namespace TerrariaManagerAgent.Services
             {
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT COUNT(*) FROM agent_character_bindings WHERE panel_user_id=@uid";
+                cmd.CommandText = "SELECT COUNT(*) FROM AgentCharacterBindings WHERE panel_user_id=@uid";
                 cmd.Parameters.AddWithValue("@uid", panelUserId);
                 return Convert.ToInt32(cmd.ExecuteScalar() ?? 0);
             }
@@ -96,7 +96,7 @@ namespace TerrariaManagerAgent.Services
             {
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT 1 FROM agent_character_bindings WHERE character_name=@name COLLATE NOCASE LIMIT 1";
+                cmd.CommandText = "SELECT 1 FROM AgentCharacterBindings WHERE character_name=@name COLLATE NOCASE LIMIT 1";
                 cmd.Parameters.AddWithValue("@name", characterName);
                 return cmd.ExecuteScalar() != null;
             }
@@ -110,7 +110,7 @@ namespace TerrariaManagerAgent.Services
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = @"
                     SELECT id, panel_user_id, panel_email, character_name, registered_at, updated_at, source
-                    FROM agent_character_bindings
+                    FROM AgentCharacterBindings
                     WHERE character_name=@name COLLATE NOCASE
                     LIMIT 1";
                 cmd.Parameters.AddWithValue("@name", characterName);
@@ -130,7 +130,7 @@ namespace TerrariaManagerAgent.Services
                 {
                     cmd.Transaction = tx;
                     cmd.CommandText = @"
-                        INSERT INTO agent_character_bindings(
+                        INSERT INTO AgentCharacterBindings(
                             panel_user_id, panel_email, character_name, registered_at, updated_at, source
                         ) VALUES(@uid, @mail, @name, @now, @now, @source)
                         ON CONFLICT(character_name) DO UPDATE SET
@@ -162,8 +162,8 @@ namespace TerrariaManagerAgent.Services
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = panelUserId.HasValue
-                    ? "DELETE FROM agent_character_bindings WHERE character_name=@name COLLATE NOCASE AND panel_user_id=@uid"
-                    : "DELETE FROM agent_character_bindings WHERE character_name=@name COLLATE NOCASE";
+                    ? "DELETE FROM AgentCharacterBindings WHERE character_name=@name COLLATE NOCASE AND panel_user_id=@uid"
+                    : "DELETE FROM AgentCharacterBindings WHERE character_name=@name COLLATE NOCASE";
                 cmd.Parameters.AddWithValue("@name", characterName);
                 if (panelUserId.HasValue) cmd.Parameters.AddWithValue("@uid", panelUserId.Value);
                 cmd.ExecuteNonQuery();
@@ -179,9 +179,9 @@ namespace TerrariaManagerAgent.Services
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = panelUserId.HasValue
                     ? @"SELECT id, panel_user_id, panel_email, character_name, registered_at, updated_at, source
-                        FROM agent_character_bindings WHERE panel_user_id=@uid ORDER BY registered_at DESC"
+                        FROM AgentCharacterBindings WHERE panel_user_id=@uid ORDER BY registered_at DESC"
                     : @"SELECT id, panel_user_id, panel_email, character_name, registered_at, updated_at, source
-                        FROM agent_character_bindings ORDER BY character_name COLLATE NOCASE";
+                        FROM AgentCharacterBindings ORDER BY character_name COLLATE NOCASE";
                 if (panelUserId.HasValue) cmd.Parameters.AddWithValue("@uid", panelUserId.Value);
 
                 var rows = new List<CharacterBinding>();
@@ -218,7 +218,7 @@ namespace TerrariaManagerAgent.Services
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = @"
-                    INSERT INTO agent_server_blacklist_entries(
+                    INSERT INTO AgentServerBlacklistEntries(
                         target_user_id, target_email, reason, status,
                         created_by_user_id, created_by_email, created_at
                     ) VALUES(@target_uid, @target_email, @reason, 'active', @created_uid, @created_email, @now)";
@@ -241,7 +241,7 @@ namespace TerrariaManagerAgent.Services
                     SELECT id, target_user_id, target_email, reason, status,
                            created_by_user_id, created_by_email, created_at,
                            removed_by_user_id, removed_by_email, removed_at
-                    FROM agent_server_blacklist_entries
+                    FROM AgentServerBlacklistEntries
                     WHERE target_user_id=@target_uid AND status='active'
                     LIMIT 1";
                 read.Parameters.AddWithValue("@target_uid", targetUserId);
@@ -259,7 +259,7 @@ namespace TerrariaManagerAgent.Services
                 using var conn = OpenDb();
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = @"
-                    UPDATE agent_server_blacklist_entries
+                    UPDATE AgentServerBlacklistEntries
                     SET status='removed', removed_by_user_id=@removed_uid,
                         removed_by_email=@removed_email, removed_at=@now
                     WHERE target_user_id=@target_uid AND status='active'";
@@ -275,7 +275,7 @@ namespace TerrariaManagerAgent.Services
                     SELECT id, target_user_id, target_email, reason, status,
                            created_by_user_id, created_by_email, created_at,
                            removed_by_user_id, removed_by_email, removed_at
-                    FROM agent_server_blacklist_entries
+                    FROM AgentServerBlacklistEntries
                     WHERE target_user_id=@target_uid
                     ORDER BY id DESC
                     LIMIT 1";

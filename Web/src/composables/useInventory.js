@@ -55,15 +55,37 @@ export function useInventory() {
     }, 10000)
   }
 
-  function handleSaveInventory(slotMap, agentKey) {
+  function handleSaveInventory(savePayload, agentKey) {
     invSaving.value = true
+    const slotMap = savePayload?.slots ?? savePayload
     const slots = Object.values(slotMap).sort((a, b) => a.index - b.index)
     pendingSaveId = `sinv-${Date.now()}`
+    const payload = {
+      agent_key: agentKey,
+      username: invUsername.value,
+      slots,
+    }
+    if (typeof savePayload?.max_hp === 'number') payload.max_hp = savePayload.max_hp
+    if (typeof savePayload?.max_mana === 'number') payload.max_mana = savePayload.max_mana
+    for (const key of [
+      'extraSlot',
+      'unlockedBiomeTorches',
+      'ateArtisanBread',
+      'usedAegisCrystal',
+      'usedAegisFruit',
+      'usedArcaneCrystal',
+      'usedGalaxyPearl',
+      'usedGummyWorm',
+      'usedAmbrosia',
+      'unlockedSuperCart',
+    ]) {
+      if (typeof savePayload?.[key] === 'number') payload[key] = savePayload[key]
+    }
     window.__tshockSend?.({
       type:      'save_inventory',
       msg_id:    pendingSaveId,
       timestamp: Date.now(),
-      payload:   { agent_key: agentKey, username: invUsername.value, slots },
+      payload,
     })
   }
 

@@ -163,18 +163,26 @@ namespace TerrariaManagerAgent.Services.Handlers
             }
         }
 
-        /// <summary>轻量级：仅返回在线玩家的 Tile 坐标，不重新生成图片。</summary>
+        /// <summary>轻量级：仅返回在线玩家坐标与生命魔力，不重新生成图片。</summary>
         public async Task HandlePlayerPositions(PacketEnvelope envelope)
         {
             try
             {
                 var players = TShock.Players
-                    .Where(p => p != null && p.Active && !string.IsNullOrEmpty(p.Name))
-                    .Select(p => new
+                    .Where(p => p != null && p.Active && p.TPlayer != null && !string.IsNullOrEmpty(p.Name))
+                    .Select(p =>
                     {
-                        name   = p.Name,
-                        tile_x = (int)(p.TPlayer.position.X / 16f),
-                        tile_y = (int)(p.TPlayer.position.Y / 16f)
+                        var tp = p!.TPlayer!;
+                        return new
+                        {
+                            name = p.Name,
+                            hp = tp.statLife,
+                            max_hp = tp.statLifeMax2,
+                            mana = tp.statMana,
+                            max_mana = tp.statManaMax2,
+                            tile_x = (int)(tp.position.X / 16f),
+                            tile_y = (int)(tp.position.Y / 16f)
+                        };
                     })
                     .ToList();
 

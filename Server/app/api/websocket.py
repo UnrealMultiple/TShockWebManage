@@ -7,6 +7,7 @@ import secrets
 import sqlite3
 import time
 import unicodedata
+from typing import List
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.core.config import AUTH_DB_PATH
 from app.core.utils import verify_token, new_id, now_ms
@@ -36,6 +37,29 @@ def with_operator(payload: dict, email: str) -> dict:
     return p
 
 
+def _load_permissions(raw: str) -> List[str]:
+    try:
+        data = json.loads(raw or "[]")
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(item).strip() for item in data if str(item).strip()]
+
+
+def _permission_matches(granted: str, required: str) -> bool:
+    if granted == "*" or granted == required:
+        return True
+    if granted.endswith(".*"):
+        prefix = granted[:-2]
+        return required == prefix or required.startswith(prefix + ".")
+    return False
+
+
+def _has_permission(perms: List[str], required: str) -> bool:
+    return any(_permission_matches(p, required) for p in perms)
+
+
 def has_console_access(email: str, agent_key: str) -> bool:
     agent_key = _normalize_agent_key(agent_key)
     if not agent_key:
@@ -46,7 +70,7 @@ def has_console_access(email: str, agent_key: str) -> bool:
                 """
                 SELECT sm.user_id, sm.role, s.id, s.owner_id
                 FROM users u
-                JOIN server_members sm ON sm.user_id = u.id
+                JOIN ServerMembers sm ON sm.user_id = u.id
                 JOIN servers s ON s.id = sm.server_id
                 WHERE u.email=? COLLATE NOCASE
                   AND s.agent_key=?
@@ -60,27 +84,16 @@ def has_console_access(email: str, agent_key: str) -> bool:
             # 服务器所有者（owner_id）或成员角色为 owner 直通
             if owner_id == user_id or role == 'owner':
                 return True
-            # 检查面板权限组是否含 panel.console 或通配权限
+            # 检查服务器权限组是否含 panel.console 或通配权限
             pg_row = conn.execute(
-                "SELECT spg.id FROM server_member_roles smpg "
-                "JOIN server_roles spg ON spg.id = smpg.group_id "
-                "WHERE smpg.server_id=? AND smpg.user_id=?",
+                "SELECT spg.permissions FROM ServerMembers sm "
+                "JOIN ServerAccessGroups spg ON spg.id = sm.access_group_id "
+                "WHERE sm.server_id=? AND sm.user_id=?",
                 (server_id, user_id),
             ).fetchone()
             if not pg_row:
                 return False
-            perms = conn.execute(
-                "SELECT permission FROM server_role_permissions WHERE group_id=?",
-                (pg_row[0],),
-            ).fetchall()
-            for (p,) in perms:
-                if p == '*' or p == 'panel.console':
-                    return True
-                if p.endswith('.*'):
-                    prefix = p[:-2]
-                    if 'panel.console' == prefix or 'panel.console'.startswith(prefix + '.'):
-                        return True
-            return False
+            return _has_permission(_load_permissions(pg_row[0]), "panel.console")
     except Exception:
         return False
 
@@ -95,7 +108,7 @@ def has_panel_permission(email: str, agent_key: str, permission: str) -> bool:
                 """
                 SELECT sm.user_id, sm.role, s.id, s.owner_id
                 FROM users u
-                JOIN server_members sm ON sm.user_id = u.id
+                JOIN ServerMembers sm ON sm.user_id = u.id
                 JOIN servers s ON s.id = sm.server_id
                 WHERE u.email=? COLLATE NOCASE
                   AND s.agent_key=?
@@ -110,27 +123,49 @@ def has_panel_permission(email: str, agent_key: str, permission: str) -> bool:
                 return True
 
             pg_row = conn.execute(
-                "SELECT spg.id FROM server_member_roles smpg "
-                "JOIN server_roles spg ON spg.id = smpg.group_id "
-                "WHERE smpg.server_id=? AND smpg.user_id=?",
+                "SELECT spg.permissions FROM ServerMembers sm "
+                "JOIN ServerAccessGroups spg ON spg.id = sm.access_group_id "
+                "WHERE sm.server_id=? AND sm.user_id=?",
                 (server_id, user_id),
             ).fetchone()
             if not pg_row:
                 return False
-            perms = conn.execute(
-                "SELECT permission FROM server_role_permissions WHERE group_id=?",
-                (pg_row[0],),
-            ).fetchall()
-            for (p,) in perms:
-                if p == '*' or p == permission:
-                    return True
-                if p.endswith('.*'):
-                    prefix = p[:-2]
-                    if permission == prefix or permission.startswith(prefix + '.'):
-                        return True
-            return False
+            return _has_permission(_load_permissions(pg_row[0]), permission)
     except Exception:
         return False
+
+
+def _normalize_sql(sql: str) -> str:
+    return re.sub(r"\s+", " ", (sql or "").strip()).strip()
+
+
+def _is_safe_table_browser_query(sql: str) -> bool:
+    s = _normalize_sql(sql)
+    if not s:
+        return False
+    if re.fullmatch(r"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", s, re.I):
+        return True
+    if re.fullmatch(r'PRAGMA table_info\("[^"]+"\)', s, re.I):
+        return True
+    if re.fullmatch(r'SELECT rowid AS __rowid__, \* FROM "[^"]+" LIMIT \d+ OFFSET \d+', s, re.I):
+        return True
+    return False
+
+
+def required_file_db_permission(req_type: str, payload: dict):
+    if req_type == "file_read":
+        return "panel.files"
+    if req_type in ("file_write", "file_move", "file_copy"):
+        return "panel.files.write"
+    if req_type == "file_delete":
+        return "panel.files.delete"
+    if req_type == "db_query":
+        return "panel.database" if _is_safe_table_browser_query(payload.get("sql", "")) else "panel.database.sql"
+    if req_type in ("db_update_row", "db_delete_row", "db_insert_row"):
+        return "panel.database.write"
+    if req_type == "db_exec":
+        return "panel.database.sql"
+    return None
 
 
 def is_character_owner(email: str, agent_key: str, username: str) -> bool:
@@ -143,7 +178,7 @@ def is_character_owner(email: str, agent_key: str, username: str) -> bool:
                 """
                 SELECT 1
                 FROM users u
-                JOIN agent_character_bindings_cache gc ON gc.user_id = u.id
+                JOIN AgentCharacterBindingsCache gc ON gc.user_id = u.id
                 WHERE u.email=? COLLATE NOCASE
                   AND gc.agent_key=?
                   AND gc.character_name=? COLLATE NOCASE
@@ -167,7 +202,7 @@ def is_server_member(email: str, agent_key: str) -> bool:
                 """
                 SELECT 1
                 FROM users u
-                JOIN server_members sm ON sm.user_id = u.id
+                JOIN ServerMembers sm ON sm.user_id = u.id
                 JOIN servers s ON s.id = sm.server_id
                 WHERE u.email=? COLLATE NOCASE
                   AND s.agent_key=?
@@ -209,7 +244,7 @@ def get_user_register_quota(agent_key: str, user_id: int):
                 limit = 1
             limit = max(0, min(50, limit))
             count_row = conn.execute(
-                "SELECT COUNT(*) FROM agent_character_bindings_cache WHERE agent_key=? AND user_id=?",
+                "SELECT COUNT(*) FROM AgentCharacterBindingsCache WHERE agent_key=? AND user_id=?",
                 (agent_key, user_id),
             ).fetchone()
             count = int(count_row[0] if count_row and count_row[0] is not None else 0)
@@ -277,7 +312,7 @@ def list_member_agent_keys(email: str):
                 """
                 SELECT s.agent_key
                 FROM users u
-                JOIN server_members sm ON sm.user_id = u.id
+                JOIN ServerMembers sm ON sm.user_id = u.id
                 JOIN servers s ON s.id = sm.server_id
                 WHERE u.email=? COLLATE NOCASE
                 """,
@@ -344,8 +379,8 @@ def lookup_ts_info(email: str, agent_key: str = ""):
         通过面板邮箱获取对应的 TShock 执行身份。
         优先级：
             1. 服务器所有者（owner_id）或成员角色为 owner，或具备 panel.console → superadmin 控制台权限
-            2. 平台 RBAC account_roles 表中有 superadmin 组 → 控制台权限
-            3. 平台 RBAC account_roles 表中有其他组 → 对应 TShock 组权限
+            2. 平台 AccountAccessGroups 中为 superadmin 组 → 控制台权限
+            3. 平台 AccountAccessGroups 中为其他组 → 对应 TShock 组权限
             4. 兜底 → default 组（无特殊权限）
     """
     try:
@@ -355,7 +390,7 @@ def lookup_ts_info(email: str, agent_key: str = ""):
                 role_row = conn.execute(
                     """
                     SELECT sm.user_id, sm.role, s.owner_id FROM users u
-                    JOIN server_members sm ON sm.user_id = u.id
+                    JOIN ServerMembers sm ON sm.user_id = u.id
                     JOIN servers s ON s.id = sm.server_id
                     WHERE u.email=? COLLATE NOCASE AND s.agent_key=?
                     LIMIT 1
@@ -367,11 +402,10 @@ def lookup_ts_info(email: str, agent_key: str = ""):
                 if has_panel_permission(email, agent_key, "panel.console"):
                     return {"ts_user": "Console", "ts_group": "superadmin", "is_console": True}
 
-            # ② 回退：查平台 RBAC 组（兼容旧逻辑）
+            # ② 回退：查平台账号权限组
             row = conn.execute("""
-                SELECT g.name FROM account_roles g
-                JOIN account_role_members ug ON g.id = ug.group_id
-                JOIN users u ON u.id = ug.user_id
+                SELECT g.name FROM AccountAccessGroups g
+                JOIN users u ON u.access_group_id = g.id
                 WHERE u.email=? COLLATE NOCASE LIMIT 1
             """, (email,)).fetchone()
 
@@ -395,7 +429,7 @@ async def sync_agent_local_store_from_platform(agent_key: str):
             characters = conn.execute(
                 """
                 SELECT gc.user_id, u.email, gc.character_name
-                FROM agent_character_bindings_cache gc
+                FROM AgentCharacterBindingsCache gc
                 JOIN users u ON u.id = gc.user_id
                 WHERE gc.agent_key=?
                 """,
@@ -406,7 +440,7 @@ async def sync_agent_local_store_from_platform(agent_key: str):
                 SELECT
                     b.target_user_id, b.target_email, b.reason,
                     b.created_by_user_id, COALESCE(u.email, '') AS created_by_email
-                FROM agent_server_blacklist_cache b
+                FROM AgentServerBlacklistCache b
                 JOIN servers s ON s.id = b.server_id
                 LEFT JOIN users u ON u.id = b.created_by_user_id
                 WHERE s.agent_key=? AND b.status='active'
@@ -488,7 +522,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                     }))
                     continue
 
-                # 仅 owner / web_staff 可连接并使用该服务器控制台
+                # 仅服务器所有者或具备 panel.console 权限的成员可使用控制台
                 if not has_console_access(email, target_key):
                     await websocket.send_text(manager.make_envelope("cmd_resp", {
                         "ref_id": packet.get("msg_id"),
@@ -556,9 +590,9 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                     }))
                     continue
 
-                if not has_console_access(email, target_key):
+                if not has_panel_permission(email, target_key, "panel.files"):
                     await websocket.send_text(manager.make_envelope("file_list_resp", {
-                        "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限"
+                        "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，缺少文件管理权限"
                     }))
                     continue
 
@@ -732,7 +766,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                 })
                 await manager.send_agent(target_key, fwd)
 
-            elif packet.get("type") in ("player_list", "player_action",
+            elif packet.get("type") in ("get_status", "player_list", "player_action",
                                           "world_progress", "player_stats"):
                 payload    = packet.get("payload", {})
                 target_key = payload.get("agent_key")
@@ -744,7 +778,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                     }))
                     continue
 
-                # world_progress 和 player_stats 所有成员可查
+                # get_status / world_progress / player_stats 所有成员可查
                 if packet.get("type") in ("player_list", "player_action"):
                     if not has_console_access(email, target_key):
                         await websocket.send_text(manager.make_envelope(resp_type, {
@@ -770,7 +804,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                 })
                 await manager.send_agent(target_key, fwd)
 
-            elif packet.get("type") in ("file_read", "file_write", "file_delete", "db_query", "db_exec", "db_update_row", "db_delete_row", "db_insert_row",
+            elif packet.get("type") in ("file_read", "file_write", "file_move", "file_copy", "file_delete", "db_query", "db_exec", "db_update_row", "db_delete_row", "db_insert_row",
                                           "read_tshock_config", "write_tshock_config", "reload_tshock",
                                           "read_startup_script", "write_startup_script",
                                           "read_motd", "write_motd",
@@ -795,8 +829,17 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                     }))
                     continue
 
-                if not has_console_access(email, target_key):
-                    req_type = packet.get("type")
+                req_type = packet.get("type")
+                needed_permission = required_file_db_permission(req_type, payload)
+                if needed_permission:
+                    if not has_panel_permission(email, target_key, needed_permission):
+                        await websocket.send_text(manager.make_envelope(resp_type, {
+                            "ref_id": packet.get("msg_id"),
+                            "success": False,
+                            "msg": f"无权限，缺少 {needed_permission} 权限"
+                        }))
+                        continue
+                elif not has_console_access(email, target_key):
                     # 背包查看支持细粒度权限：自己 / 他人
                     if req_type == "get_inventory":
                         username = (payload.get("username") or "").strip()
@@ -921,7 +964,7 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                             if pu_id and char_name:
                                 conn.execute(
                                     """
-                                    INSERT OR REPLACE INTO agent_character_bindings_cache
+                                    INSERT OR REPLACE INTO AgentCharacterBindingsCache
                                         (user_id, agent_key, character_name, registered_at)
                                     VALUES (?, ?, ?, strftime('%s','now'))
                                     """,
@@ -929,7 +972,7 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                                 )
                                 conn.commit()
                     except Exception as db_err:
-                        print(f"[DB] 写入 agent_character_bindings_cache 失败: {db_err}")
+                        print(f"[DB] 写入 AgentCharacterBindingsCache 失败: {db_err}")
                 await broadcast_agent_to_members(agent_key, raw)
 
             elif packet.get("type") in ("get_char_info_resp", "send_bind_code_resp",
@@ -973,7 +1016,7 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
 
             elif packet.get("type") in ("log", "cmd_resp", "chat",
                                        "file_list_resp", "server_ctrl_resp",
-                                       "file_read_resp", "file_write_resp", "file_delete_resp",
+                                       "file_read_resp", "file_write_resp", "file_move_resp", "file_copy_resp", "file_delete_resp",
                                        "db_query_resp", "db_exec_resp", "db_update_row_resp",
                                        "db_delete_row_resp", "db_insert_row_resp",
                                        "player_list_resp", "player_action_resp",

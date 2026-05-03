@@ -34,7 +34,11 @@
 
       <!-- 初始空状态 -->
       <div v-else-if="!treeData" class="empty-state-full">
-        <div class="empty-big-icon">📁</div>
+        <div class="empty-big-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+        </div>
         <p>点击"刷新"获取服务器文件列表</p>
         <button class="btn-fetch" @click="requestFileList">获取文件列表</button>
       </div>
@@ -66,9 +70,20 @@
             >
               <span class="tr-icon">
                 <template v-if="item.type === 'dir'">
-                  {{ expandedDirs.has(item.path) ? '📂' : '📁' }}
+                  <svg v-if="expandedDirs.has(item.path)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 7h5l2 3h11v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                    <path d="M3 7V5a2 2 0 0 1 2-2h4l2 3h6a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                  </svg>
                 </template>
-                <template v-else>{{ fileIcon(item.name) }}</template>
+                <template v-else>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                </template>
               </span>
               <span class="tr-name">{{ item.name }}</span>
               <span v-if="item.type === 'file'" class="tr-size">{{ formatBytes(item.size) }}</span>
@@ -90,14 +105,13 @@
               :class="['tab-btn', { active: activeTab === cat.key }]"
               @click="setTab(cat.key)"
             >
-              {{ catIcon(cat.key) }} {{ cat.name }}
+              {{ cat.name }}
               <span class="tab-count">{{ cat.files.length }}</span>
             </button>
           </div>
 
           <div class="file-panel" v-if="currentCategory">
             <div v-if="currentCategory.files.length === 0" class="empty-state">
-              <span>📭</span>
               <p>该分类下暂无文件</p>
             </div>
 
@@ -108,17 +122,21 @@
                   <input type="checkbox" :value="f.full_path || f.name" v-model="selectedPaths">
                 </label>
                 <div class="pr-info">
-                  <span class="ft-icon">🔧</span>
+                  <span class="ft-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                      <polyline points="7.5 4.21 12 6.81 16.5 4.21"/>
+                      <polyline points="7.5 19.79 7.5 14.6 3 12"/>
+                      <polyline points="21 12 16.5 14.6 16.5 19.79"/>
+                      <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                      <line x1="12" y1="22.08" x2="12" y2="12"/>
+                    </svg>
+                  </span>
                   <span class="pr-name">{{ f.name }}</span>
                   <span v-if="f.dir" class="ft-dir-badge" :title="f.dir">{{ shortDir(f.dir) }}</span>
                 </div>
                 <div class="pr-right">
                   <span class="pr-size">{{ formatBytes(f.size) }}</span>
-                  <div class="pr-actions">
-                    <button class="pr-btn pr-enable"  @click="enablePlugin(f)">启用</button>
-                    <button class="pr-btn pr-disable" @click="disablePlugin(f)">关闭</button>
-                    <button class="pr-btn pr-cfg"     @click="editPluginConfig(f)">编辑配置文件</button>
-                  </div>
                 </div>
               </div>
             </template>
@@ -167,7 +185,12 @@
                 <span class="mr-size">{{ formatBytes(f.size) }}</span>
                 <span class="mr-date">{{ f.modified }}</span>
                 <span class="mr-actions">
-                  <button class="mr-edit-btn mr-db-btn" @click.stop="openDbBrowser(f)">
+                  <button
+                    class="mr-edit-btn mr-db-btn"
+                    @click.stop="openDbBrowser(f)"
+                    :disabled="!canBrowseDatabase"
+                    :title="canBrowseDatabase ? '浏览数据库' : '缺少数据库浏览权限'"
+                  >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
                     浏览
                   </button>
@@ -185,14 +208,29 @@
                   <input type="checkbox" :value="f.full_path || f.name" v-model="selectedPaths">
                 </label>
                 <span class="mr-name">
-                  <span class="ft-icon">{{ fileIcon(f.name) }}</span>
+                  <span class="ft-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                  </span>
                   {{ f.name }}
                   <span v-if="f.dir" class="ft-dir-badge" :title="f.dir">{{ shortDir(f.dir) }}</span>
                 </span>
                 <span class="mr-size">{{ formatBytes(f.size) }}</span>
                 <span class="mr-date">{{ f.modified }}</span>
                 <span class="mr-actions">
-                  <button class="mr-edit-btn" @click.stop="editFile(f)" title="编辑文件">✏️</button>
+                  <button
+                    class="mr-edit-btn"
+                    @click.stop="editFile(f)"
+                    :disabled="!canWriteFiles"
+                    :title="canWriteFiles ? '编辑文件' : '缺少文件写入权限'"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 20h9"/>
+                      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                    </svg>
+                  </button>
                 </span>
               </div>
             </template>
@@ -208,14 +246,26 @@
         <div class="sel-actions">
           <button class="sel-btn sel-edit"
             v-if="selectedPaths.length === 1"
-            @click="editSingleSelected">✏️ 编辑</button>
+            :disabled="!canWriteFiles"
+            @click="editSingleSelected">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            编辑
+          </button>
           <button class="sel-btn sel-rename"
             v-if="selectedPaths.length === 1"
-            @click="openRenameDialog">🏷 重命名</button>
+            :disabled="!canWriteFiles"
+            @click="openRenameDialog">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            重命名
+          </button>
           <button class="sel-btn sel-copy"
             v-if="selectedPaths.length === 1"
-            @click="openCopyDialog">📄 复制</button>
-          <button class="sel-btn sel-del" @click="deleteSelected">
+            :disabled="!canWriteFiles"
+            @click="openCopyDialog">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            复制
+          </button>
+          <button class="sel-btn sel-del" @click="deleteSelected" :disabled="!canDeleteFiles">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
             删除
           </button>
@@ -224,162 +274,14 @@
       </div>
     </transition>
 
-    <!-- ── 数据库浏览器（可视化编辑） ── -->
-    <div class="modal-backdrop" v-if="dbBrowserFile" @click.self="closeDbBrowser">
-      <div class="db-modal">
-        <!-- 顶部标题栏 -->
-        <div class="db-header">
-          <div class="db-title-row">
-            <span class="db-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-            </span>
-            <span class="db-filename">{{ dbBrowserFile.name }}</span>
-            <span class="db-badge">SQLite</span>
-          </div>
-          <div class="db-header-tabs">
-            <button :class="['db-view-btn', { active: dbViewMode === 'table' }]" @click="dbViewMode = 'table'">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-              表格
-            </button>
-            <button :class="['db-view-btn', { active: dbViewMode === 'sql' }]" @click="dbViewMode = 'sql'">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-              SQL
-            </button>
-          </div>
-          <button class="em-close" @click="closeDbBrowser">✕</button>
-        </div>
-
-        <!-- 主体：侧边栏 + 内容区 -->
-        <div class="db-body">
-          <!-- 左侧表列表 -->
-          <div class="db-sidebar">
-            <div class="db-sidebar-hd">
-              <span>数据表</span>
-              <div v-if="dbTablesLoading" class="spinner" style="width:12px;height:12px;border-width:2px;flex-shrink:0"></div>
-            </div>
-            <div v-if="dbTablesErr" class="db-sidebar-err">{{ dbTablesErr }}</div>
-            <button v-for="t in dbTables" :key="t"
-              :class="['db-tbl-item', { active: dbActiveTable === t }]"
-              @click="selectTable(t)">🗋 {{ t }}</button>
-            <div v-if="!dbTablesLoading && dbTables.length === 0 && !dbTablesErr" class="db-sidebar-empty">暂无表</div>
-          </div>
-
-          <!-- 右侧主内容区 -->
-          <div class="db-main">
-
-            <!-- SQL 模式 -->
-            <template v-if="dbViewMode === 'sql'">
-              <div class="db-sql-wrap">
-                <textarea class="db-sql-input" v-model="dbSqlInput" rows="3"
-                  placeholder="输入 SQL（SELECT … 或 INSERT / UPDATE / DELETE），Ctrl+Enter 执行"
-                  @keydown.ctrl.enter.prevent="runDbSql"></textarea>
-                <div class="db-sql-btns">
-                  <button class="db-run-btn" @click="runDbSql" :disabled="dbRunning">{{ dbRunning ? '执行中…' : '▶ 执行' }}</button>
-                  <button class="db-clear-btn" @click="dbSqlInput = ''; dbResult = null; dbResultErr = ''">✕ 清空</button>
-                </div>
-              </div>
-              <div class="db-result-area">
-                <div v-if="dbRunning" class="db-result-loading"><div class="spinner" style="width:24px;height:24px;border-width:2px"></div><span>执行中…</span></div>
-                <div v-else-if="dbResultErr" class="db-result-err">⚠️ {{ dbResultErr }}</div>
-                <template v-else-if="dbResult">
-                  <div v-if="dbResult.type === 'query'">
-                    <div class="db-result-meta">返回 <strong>{{ dbResult.rows.length }}</strong> 行<span v-if="dbResult.truncated" class="db-truncated-hint">（已截断，最多 500 行）</span></div>
-                    <div class="db-table-wrap">
-                      <table class="db-table">
-                        <thead><tr><th v-for="c in dbResult.columns" :key="c">{{ c }}</th></tr></thead>
-                        <tbody>
-                          <tr v-for="(row, ri) in dbResult.rows" :key="ri">
-                            <td v-for="(cell, ci) in row" :key="ci" :class="{ 'db-null': cell === null }">{{ cell === null ? 'NULL' : cell }}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                  <div v-else-if="dbResult.type === 'exec'" class="db-exec-ok">✅ 执行成功，影响 <strong>{{ dbResult.affected }}</strong> 行</div>
-                </template>
-                <div v-else class="db-result-empty">在上方输入 SQL 后按"▶ 执行"或 Ctrl+Enter</div>
-              </div>
-            </template>
-
-            <!-- 表格可视化模式 -->
-            <template v-else>
-              <div v-if="!dbActiveTable" class="db-no-table">← 从左侧选择数据表</div>
-              <template v-else>
-                <!-- 工具栏 -->
-                <div class="db-tbl-toolbar">
-                  <span class="db-tbl-name">{{ dbActiveTable }}</span>
-                  <span v-if="dbTableCols.length" class="db-col-badge">{{ dbTableCols.length }} 列</span>
-                  <span class="db-spacer"></span>
-                  <span v-if="dbResultErr" class="db-tbl-err">⚠️ {{ dbResultErr }}</span>
-                  <button class="db-add-row-btn" @click="startAddRow" :disabled="dbTableLoading">+ 添加行</button>
-                  <button class="db-pg-btn" @click="dbPagePrev" :disabled="dbPage === 0 || dbTableLoading">‹</button>
-                  <span class="db-pg-info">第 {{ dbPage + 1 }} 页</span>
-                  <button class="db-pg-btn" @click="dbPageNext" :disabled="!dbHasMore || dbTableLoading">›</button>
-                  <button class="db-reload-btn" @click="loadTableData" :disabled="dbTableLoading" title="刷新">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.18"/></svg>
-                  </button>
-                </div>
-
-                <!-- 可视化数据表格 -->
-                <div class="db-visual-wrap">
-                  <div v-if="dbTableLoading" class="db-result-loading">
-                    <div class="spinner" style="width:24px;height:24px;border-width:2px"></div><span>加载中…</span>
-                  </div>
-                  <table v-else class="db-visual-table">
-                    <thead>
-                      <tr>
-                        <th v-for="col in dbTableCols" :key="col.name" class="db-vth">
-                          <span class="db-col-nm">{{ col.name }}</span>
-                          <span class="db-col-tp">{{ col.type }}</span>
-                          <span v-if="col.pk" class="db-pk">PK</span>
-                        </th>
-                        <th class="db-ops-th">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <!-- 新增行表单 -->
-                      <tr v-if="dbAddRowMode" class="db-add-row-tr">
-                        <td v-for="col in dbTableCols" :key="col.name" class="db-add-td">
-                          <input class="db-cell-inp" v-model="dbNewRowValues[col.name]" :placeholder="col.dflt ?? col.type" />
-                        </td>
-                        <td class="db-ops-cell">
-                          <button class="db-ok-btn" @click="confirmAddRow" :disabled="dbAddRowSaving">✓</button>
-                          <button class="db-cx-btn" @click="dbAddRowMode = false">✕</button>
-                        </td>
-                      </tr>
-                      <!-- 数据行 -->
-                      <tr v-for="(row, ri) in dbTableRows" :key="row[0]">
-                        <td v-for="(col, ci) in dbTableCols" :key="col.name"
-                          :class="['db-vtd', { 'db-null': row[ci+1] === null, 'db-cell-active': dbEditCell && dbEditCell.rowIdx === ri && dbEditCell.colIdx === ci }]"
-                          @dblclick="startEditCell(ri, ci, row[ci+1])">
-                          <template v-if="dbEditCell && dbEditCell.rowIdx === ri && dbEditCell.colIdx === ci">
-                            <input class="db-cell-inp db-cell-inp-edit" v-model="dbEditCell.value"
-                              @keydown.enter.prevent="saveEditCell"
-                              @keydown.escape="cancelEditCell"
-                              @blur="saveEditCell"
-                              ref="dbCellInputRef" />
-                          </template>
-                          <template v-else>
-                            <span class="db-cv">{{ row[ci+1] === null ? 'NULL' : row[ci+1] }}</span>
-                          </template>
-                        </td>
-                        <td class="db-ops-cell">
-                          <button class="db-del-row-btn" @click="deleteRow(ri, row[0])" title="删除此行">🗑</button>
-                        </td>
-                      </tr>
-                      <tr v-if="dbTableRows.length === 0 && !dbTableLoading">
-                        <td :colspan="dbTableCols.length + 1" class="db-empty-row">该表暂无数据</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </template>
-            </template>
-
-          </div>
-        </div>
-      </div>
-    </div>
+    <DatabaseBrowserModal
+      v-if="dbBrowserFile"
+      :file="dbBrowserFile"
+      :active-server-key="activeServerKey"
+      :can-write-database="canWriteDatabase"
+      :can-use-raw-sql="canUseRawSql"
+      @close="closeDbBrowser"
+    />
 
     <!-- ── 文件编辑模态框 ── -->
     <div class="modal-backdrop" v-if="editingFile" @click.self="closeEditor">
@@ -390,7 +292,12 @@
             <span v-if="isEditingJson" class="em-lang-badge em-json">JSON</span>
             <span v-else-if="isEditingBinary" class="em-lang-badge em-binary">二进制</span>
           </div>
-          <button class="em-close" @click="closeEditor">✕</button>
+          <button class="em-close" @click="closeEditor" title="关闭">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
         </div>
         <div v-if="editorLoading" class="em-loading">
           <div class="spinner"></div><span>正在读取文件…</span>
@@ -410,17 +317,63 @@
           </div>
         </template>
         <template v-else>
-          <div v-if="editorError" class="em-error">⚠️ {{ editorError }}</div>
-          <div v-if="isEditingJson && jsonValidErr" class="em-json-warn">
-            ⚠️ JSON 错误：{{ jsonValidErr }}
-            <button v-if="jsonErrLine > 0" class="em-jump-btn" @click="jumpToErrorLine">跳转到第 {{ jsonErrLine }} 行</button>
+          <div v-if="editorError" class="em-error">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            {{ editorError }}
           </div>
-          <textarea class="em-textarea" v-model="editContent" spellcheck="false"
-            @input="isEditingJson && validateJson()"></textarea>
+          <div v-if="isEditingJson" class="em-json-panel">
+            <div class="em-json-editor" :class="{ invalid: !!jsonValidErr }">
+              <div ref="jsonLineGutterEl" class="em-json-gutter" aria-hidden="true">
+                <span v-for="line in jsonLineNumbers" :key="line" :class="{ error: line === jsonErrorLine }">{{ line }}</span>
+              </div>
+              <pre ref="jsonHighlightEl" class="em-json-highlight" aria-hidden="true"><code v-html="highlightedJson"></code></pre>
+              <textarea
+                ref="jsonTextareaEl"
+                class="em-json-input"
+                v-model="editContent"
+                spellcheck="false"
+                @input="validateJson"
+                @scroll="syncJsonScroll"
+                @keydown.tab.prevent="insertJsonIndent"
+              ></textarea>
+            </div>
+            <div v-if="jsonValidErr" class="em-json-err">
+              <div class="em-json-err-head">
+                <strong>JSON 格式不正确</strong>
+                <button v-if="jsonErrorPos" class="em-json-err-jump" @click="jumpToJsonError">定位到错误</button>
+              </div>
+              <div class="em-json-err-msg">{{ jsonValidErr }}</div>
+              <div v-if="jsonErrorPos" class="em-json-err-meta">
+                第 {{ jsonErrorPos.line }} 行，第 {{ jsonErrorPos.col }} 列附近
+              </div>
+              <div v-if="jsonErrorContext.length" class="em-json-err-context">
+                <template v-for="row in jsonErrorContext" :key="`${row.line}-${row.isCaret ? 'caret' : 'code'}`">
+                  <div v-if="!row.isCaret" :class="['em-json-err-row', { error: row.isError }]">
+                    <span class="em-json-err-no">{{ row.line }}</span>
+                    <code>{{ row.text || ' ' }}</code>
+                  </div>
+                  <div v-else class="em-json-err-row em-json-err-caret">
+                    <span class="em-json-err-no"></span>
+                    <code :style="{ paddingLeft: `${Math.max(0, row.col - 1)}ch` }">^</code>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+          <textarea v-else class="em-textarea" v-model="editContent" spellcheck="false"></textarea>
           <div class="em-footer">
-            <button v-if="isEditingJson" class="em-fmt-btn" @click="formatJson" :disabled="editorSaving">🔧 格式化</button>
+            <button v-if="isEditingJson" class="em-fmt-btn" @click="formatJson" :disabled="editorSaving">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.1-3.1a5 5 0 0 1-6.6 6.6L8.6 18.4a2 2 0 1 1-2.8-2.8l5.6-5.6a5 5 0 0 1 6.6-6.6z"/>
+              </svg>
+              格式化
+            </button>
             <span style="flex:1"></span>
-            <button class="em-save" @click="saveFile" :disabled="editorSaving">
+            <button class="em-save" @click="saveFile" :disabled="editorSaving || !canWriteFiles || (isEditingJson && !!jsonValidErr)">
               <svg v-if="!editorSaving" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
               {{ editorSaving ? '保存中…' : '保存' }}
             </button>
@@ -439,7 +392,7 @@
         <div class="cm-title">确认删除</div>
         <div class="cm-body">确定要删除 <strong>{{ deleteTarget.name }}</strong> 吗？<br>此操作不可恢复。</div>
         <div class="cm-footer">
-          <button class="cm-del" @click="doDelete" :disabled="deleteBusy">{{ deleteBusy ? '删除中…' : '确认删除' }}</button>
+          <button class="cm-del" @click="doDelete" :disabled="deleteBusy || !canDeleteFiles">{{ deleteBusy ? '删除中…' : '确认删除' }}</button>
           <button class="cm-cancel" @click="deleteTarget = null" :disabled="deleteBusy">取消</button>
         </div>
       </div>
@@ -455,7 +408,7 @@
           <span style="font-size:11px;color:#94a3b8">包括：{{ batchDeleteTarget.map(f=>f.name).join('、') }}</span>
         </div>
         <div class="cm-footer">
-          <button class="cm-del" @click="startBatchDelete">确认删除</button>
+          <button class="cm-del" @click="startBatchDelete" :disabled="!canDeleteFiles">确认删除</button>
           <button class="cm-cancel" @click="batchDeleteTarget = []">取消</button>
         </div>
       </div>
@@ -473,7 +426,12 @@
     <!-- ── 批量删除完成 ── -->
     <div class="modal-backdrop" v-if="batchDeleteDone" @click.self="batchDeleteDone = false; batchDeleteTarget = []; selectedPaths = []">
       <div class="confirm-modal">
-        <div class="cm-icon">✅</div>
+        <div class="cm-icon cm-icon-ok">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+        </div>
         <div class="cm-title">删除完成</div>
         <div class="cm-body">已删除 {{ batchDeleteTarget.length }} 个文件。</div>
         <div class="cm-footer">
@@ -493,7 +451,7 @@
           @keyup.enter="confirmPathDialog"
         />
         <div class="cm-footer">
-          <button class="cm-del" @click="confirmPathDialog">确认</button>
+          <button class="cm-del" @click="confirmPathDialog" :disabled="!canWriteFiles">确认</button>
           <button class="cm-cancel" @click="closePathDialog">取消</button>
         </div>
       </div>
@@ -506,6 +464,7 @@ import { ref, computed, inject, onMounted, onUnmounted, nextTick } from 'vue'
 import { useFeedback } from '@/composables/useFeedback'
 import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import DatabaseBrowserModal from '@/components/files/DatabaseBrowserModal.vue'
 
 const props = defineProps({
   wsState:     { type: String, default: 'disconnected' },
@@ -514,7 +473,8 @@ const props = defineProps({
 
 const activeServer    = inject('activeServer',    ref(null))
 const activeServerKey = inject('activeServerKey', ref(''))
-const { toast, dialog } = useFeedback()
+const hasPerm         = inject('hasPerm', () => false)
+const { toast } = useFeedback()
 
 const loading         = ref(false)
 const treeData        = ref(null)
@@ -523,6 +483,33 @@ const serverDir       = ref('')
 const activeTab       = ref('')
 const treeSectionOpen = ref(false)
 const expandedDirs    = ref(new Set())
+
+const serverCapabilities = computed(() =>
+  activeServer.value?.capabilities || activeServer.value?.agent_capabilities || null
+)
+
+function hasCapability(name) {
+  const caps = serverCapabilities.value
+  if (!caps) return true
+  if (Array.isArray(caps)) return caps.includes(name)
+  return caps[name] !== false
+}
+
+const canWriteFiles = computed(() =>
+  hasPerm('panel.files.write') && hasCapability('file_write')
+)
+const canDeleteFiles = computed(() =>
+  hasPerm('panel.files.delete') && hasCapability('file_delete')
+)
+const canBrowseDatabase = computed(() =>
+  hasPerm('panel.database') && hasCapability('database')
+)
+const canWriteDatabase = computed(() =>
+  hasPerm('panel.database.write') && hasCapability('database_write')
+)
+const canUseRawSql = computed(() =>
+  hasPerm('panel.database.sql') && hasCapability('database_sql')
+)
 
 // ── 选中文件集合 ──
 const selectedPaths = ref([])
@@ -547,6 +534,7 @@ function setTab(key) {
 
 // 编辑单个选中文件
 function editSingleSelected() {
+  if (!canWriteFiles.value) { toast.warning('缺少文件写入权限'); return }
   const f = selectedFiles.value[0]
   if (!f) return
   editFile(f)
@@ -554,6 +542,7 @@ function editSingleSelected() {
 }
 
 function openRenameDialog() {
+  if (!canWriteFiles.value) { toast.warning('缺少文件写入权限'); return }
   const f = selectedFiles.value[0]
   if (!f) return
   pathDialogMode.value = 'rename'
@@ -565,6 +554,7 @@ function openRenameDialog() {
 }
 
 function openCopyDialog() {
+  if (!canWriteFiles.value) { toast.warning('缺少文件写入权限'); return }
   const f = selectedFiles.value[0]
   if (!f) return
   pathDialogMode.value = 'copy'
@@ -580,6 +570,7 @@ function closePathDialog() {
 }
 
 function confirmPathDialog() {
+  if (!canWriteFiles.value) { toast.warning('缺少文件写入权限'); return }
   const f = selectedFiles.value[0]
   if (!f) return
   const text = (pathDialogInput.value || '').trim()
@@ -596,15 +587,6 @@ function confirmPathDialog() {
     payload: { agent_key: activeServerKey.value, src_path: srcPath, dst_path: dstPath },
   })
   pathDialogVisible.value = false
-}
-
-function toAbsolutePath(input, baseDir) {
-  const raw = (input || '').trim()
-  if (!raw) return ''
-  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith('\\\\')) return raw
-  const normalizedBase = (baseDir || '').replace(/[\\/]+$/, '')
-  if (!normalizedBase) return raw
-  return `${normalizedBase}\\${raw.replace(/^[\\/]+/, '')}`
 }
 
 function normalizeWinPath(path) {
@@ -628,6 +610,7 @@ function getSafeBaseDir() {
 
 // 删除选中文件（目前转单个确认；批量删除可后续扩展）
 function deleteSelected() {
+  if (!canDeleteFiles.value) { toast.warning('缺少文件删除权限'); return }
   if (selectedFiles.value.length === 1) {
     deleteFile(selectedFiles.value[0])
   } else if (selectedFiles.value.length > 1) {
@@ -644,12 +627,14 @@ const batchDeleteDone   = ref(false)
 const batchDeleteQueue  = ref([])
 
 function startBatchDelete() {
+  if (!canDeleteFiles.value) { toast.warning('缺少文件删除权限'); return }
   batchDeleteBusy.value  = true
   batchDeleteQueue.value = batchDeleteTarget.value.map(f => f.full_path || f.name)
   sendNextDelete()
 }
 
 function sendNextDelete() {
+  if (!canDeleteFiles.value) { toast.warning('缺少文件删除权限'); return }
   const path = batchDeleteQueue.value.shift()
   if (!path) { batchDeleteDone.value = true; batchDeleteBusy.value = false; return }
   window.__tshockSend?.({
@@ -658,170 +643,15 @@ function sendNextDelete() {
   })
 }
 
-// ── 数据库浏览器状态 ──
-const dbBrowserFile   = ref(null)
-const dbTables        = ref([])
-const dbTablesLoading = ref(false)
-const dbTablesErr     = ref('')
-const dbActiveTable   = ref('')
-const dbSqlInput      = ref('')
-const dbRunning       = ref(false)
-const dbResult        = ref(null)
-const dbResultErr     = ref('')
-const dbViewMode      = ref('table')    // 'table' | 'sql'
-const dbTableCols     = ref([])         // [{cid,name,type,notnull,dflt,pk}]
-const dbTableRows     = ref([])         // rows[ri][0]=rowid, [1..]=data
-const dbTableLoading  = ref(false)
-const dbHasMore       = ref(false)
-const dbPage          = ref(0)
-const dbPageSize      = 200
-const dbEditCell      = ref(null)       // {rowIdx,colIdx,value,orig}
-const dbEditSaving    = ref(false)
-const dbAddRowMode    = ref(false)
-const dbNewRowValues  = ref({})
-const dbAddRowSaving  = ref(false)
-const dbCellInputRef  = ref(null)
+const dbBrowserFile = ref(null)
 
 function openDbBrowser(f) {
-  dbBrowserFile.value  = f
-  dbTables.value       = []
-  dbTablesLoading.value = true
-  dbTablesErr.value    = ''
-  dbActiveTable.value  = ''
-  dbSqlInput.value     = ''
-  dbResult.value       = null
-  dbResultErr.value    = ''
-  dbViewMode.value     = 'table'
-  dbTableCols.value    = []
-  dbTableRows.value    = []
-  dbTableLoading.value = false
-  dbHasMore.value      = false
-  dbPage.value         = 0
-  dbEditCell.value     = null
-  dbAddRowMode.value   = false
-  window.__tshockSend?.({
-    type: 'db_query', msg_id: 'dbtables-' + Date.now(), timestamp: Date.now(),
-    payload: { agent_key: activeServerKey.value, path: f.full_path,
-      sql: "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name" },
-  })
+  if (!canBrowseDatabase.value) { toast.warning('缺少数据库浏览权限'); return }
+  dbBrowserFile.value = f
 }
 
 function closeDbBrowser() {
-  dbBrowserFile.value = null; dbTables.value = []; dbResult.value = null
-  dbTableCols.value = []; dbTableRows.value = []; dbEditCell.value = null
-}
-
-function selectTable(t) {
-  dbActiveTable.value  = t
-  dbViewMode.value     = 'table'
-  dbPage.value         = 0
-  dbEditCell.value     = null
-  dbAddRowMode.value   = false
-  dbResultErr.value    = ''
-  dbTableCols.value    = []
-  dbTableRows.value    = []
-  dbTableLoading.value = true
-  const safeT = t.replace(/"/g, '""')
-  window.__tshockSend?.({
-    type: 'db_query', msg_id: 'dbinfo-' + Date.now(), timestamp: Date.now(),
-    payload: { agent_key: activeServerKey.value, path: dbBrowserFile.value.full_path,
-      sql: `PRAGMA table_info("${safeT}")` },
-  })
-  loadTableData()
-}
-
-function loadTableData() {
-  if (!dbActiveTable.value || !dbBrowserFile.value) return
-  dbTableLoading.value = true
-  const safeT  = dbActiveTable.value.replace(/"/g, '""')
-  const offset = dbPage.value * dbPageSize
-  window.__tshockSend?.({
-    type: 'db_query', msg_id: 'dbdata-' + Date.now(), timestamp: Date.now(),
-    payload: { agent_key: activeServerKey.value, path: dbBrowserFile.value.full_path,
-      sql: `SELECT rowid AS __rowid__, * FROM "${safeT}" LIMIT ${dbPageSize + 1} OFFSET ${offset}` },
-  })
-}
-
-function dbPagePrev() { if (dbPage.value > 0)    { dbPage.value--; loadTableData() } }
-function dbPageNext() { if (dbHasMore.value)       { dbPage.value++; loadTableData() } }
-
-function startEditCell(ri, ci, val) {
-  if (dbEditSaving.value) return
-  dbEditCell.value = { rowIdx: ri, colIdx: ci, value: val === null ? '' : String(val), orig: val }
-  nextTick(() => {
-    const inp = dbCellInputRef.value
-    ;(Array.isArray(inp) ? inp[0] : inp)?.focus?.()
-  })
-}
-
-function cancelEditCell() { dbEditCell.value = null }
-
-function saveEditCell() {
-  if (!dbEditCell.value || !dbBrowserFile.value) return
-  const { rowIdx, colIdx, value, orig } = dbEditCell.value
-  const newVal = value === '' ? null : value
-  if (String(newVal) === String(orig) || (newVal === null && orig === null)) {
-    dbEditCell.value = null; return
-  }
-  const row   = dbTableRows.value[rowIdx]
-  const col   = dbTableCols.value[colIdx]?.name
-  const rowid = row?.[0]
-  if (!col) { dbEditCell.value = null; return }
-  dbEditSaving.value = true
-  window.__tshockSend?.({
-    type: 'db_update_row', msg_id: 'dbedit-' + Date.now(), timestamp: Date.now(),
-    payload: { agent_key: activeServerKey.value, path: dbBrowserFile.value.full_path,
-      table: dbActiveTable.value, rowid, col, value: newVal },
-  })
-}
-
-async function deleteRow(rowIdx, rowid) {
-  const ok = await dialog.confirm({
-    title: '删除数据行',
-    message: '确认删除此行？',
-    confirmText: '删除',
-    danger: true,
-  })
-  if (!ok) return
-  dbTableRows.value.splice(rowIdx, 1)
-  window.__tshockSend?.({
-    type: 'db_delete_row', msg_id: 'dbdel-' + Date.now(), timestamp: Date.now(),
-    payload: { agent_key: activeServerKey.value, path: dbBrowserFile.value.full_path,
-      table: dbActiveTable.value, rowid },
-  })
-}
-
-function startAddRow() {
-  dbAddRowMode.value = true
-  const vals = {}
-  dbTableCols.value.forEach(c => { vals[c.name] = '' })
-  dbNewRowValues.value = vals
-}
-
-function confirmAddRow() {
-  if (!dbBrowserFile.value) return
-  dbAddRowSaving.value = true
-  const cols = dbTableCols.value.map(c => c.name).filter(c => dbNewRowValues.value[c] !== '')
-  const vals = cols.map(c => { const v = dbNewRowValues.value[c]; return v === '' ? null : v })
-  window.__tshockSend?.({
-    type: 'db_insert_row', msg_id: 'dbins-' + Date.now(), timestamp: Date.now(),
-    payload: { agent_key: activeServerKey.value, path: dbBrowserFile.value.full_path,
-      table: dbActiveTable.value, cols, values: vals },
-  })
-}
-
-function runDbSql() {
-  if (!dbSqlInput.value.trim() || !dbBrowserFile.value) return
-  dbRunning.value   = true
-  dbResultErr.value = ''
-  dbResult.value    = null
-  const sql = dbSqlInput.value.trim()
-  const isSelect = /^\s*select\b/i.test(sql)
-  window.__tshockSend?.({
-    type: isSelect ? 'db_query' : 'db_exec',
-    msg_id: 'dbrun-' + Date.now(), timestamp: Date.now(),
-    payload: { agent_key: activeServerKey.value, path: dbBrowserFile.value.full_path, sql },
-  })
+  dbBrowserFile.value = null
 }
 
 // ── 编辑器状态 ──
@@ -832,35 +662,40 @@ const editorSaving   = ref(false)
 const editorError    = ref('')
 const editorIsBinary = ref(false)
 const jsonValidErr   = ref('')
-const jsonErrLine    = ref(0)
+const jsonErrorPos   = ref(null)
+const jsonTextareaEl = ref(null)
+const jsonHighlightEl = ref(null)
+const jsonLineGutterEl = ref(null)
 
 const isEditingJson   = computed(() =>
   editingFile.value?.name?.toLowerCase().endsWith('.json') ?? false
 )
 const isEditingBinary = computed(() => editorIsBinary.value)
+const jsonLineNumbers = computed(() => {
+  const count = Math.max(1, String(editContent.value || '').split('\n').length)
+  return Array.from({ length: count }, (_, index) => index + 1)
+})
+const jsonErrorLine = computed(() => jsonErrorPos.value?.line || 0)
+const jsonErrorContext = computed(() => getJsonErrorContext(editContent.value, jsonErrorPos.value))
+const highlightedJson = computed(() => highlightJson(editContent.value, jsonErrorLine.value))
 
 function validateJson() {
-  if (!editContent.value.trim()) { jsonValidErr.value = ''; jsonErrLine.value = 0; return }
-  try   { JSON.parse(editContent.value); jsonValidErr.value = ''; jsonErrLine.value = 0 }
-  catch (e) {
-    jsonValidErr.value = e.message
-    const m = e.message.match(/line (\d+)/i)
-    jsonErrLine.value = m ? parseInt(m[1]) : 0
+  if (!editContent.value.trim()) {
+    jsonValidErr.value = ''
+    jsonErrorPos.value = null
+    nextTick(syncJsonScroll)
+    return
   }
-}
-
-function jumpToErrorLine() {
-  if (!jsonErrLine.value) return
-  const ta = document.querySelector('.em-textarea')
-  if (!ta) return
-  const lines = editContent.value.split('\n')
-  let pos = 0
-  for (let i = 0; i < Math.min(jsonErrLine.value - 1, lines.length); i++)
-    pos += lines[i].length + 1
-  ta.focus()
-  ta.setSelectionRange(pos, pos + (lines[jsonErrLine.value - 1]?.length ?? 0))
-  const lineH = ta.scrollHeight / (lines.length || 1)
-  ta.scrollTop = (jsonErrLine.value - 3) * lineH
+  try {
+    JSON.parse(editContent.value)
+    jsonValidErr.value = ''
+    jsonErrorPos.value = null
+  }
+  catch (e) {
+    jsonErrorPos.value = parseJsonErrorPosition(editContent.value, e)
+    jsonValidErr.value = formatFriendlyJsonError(editContent.value, e)
+  }
+  nextTick(syncJsonScroll)
 }
 
 function formatJson() {
@@ -868,10 +703,176 @@ function formatJson() {
     const parsed = JSON.parse(editContent.value)
     editContent.value = JSON.stringify(parsed, null, 2)
     jsonValidErr.value = ''
+    jsonErrorPos.value = null
+    nextTick(syncJsonScroll)
   } catch (e) {
-    jsonValidErr.value = e.message
-    editorError.value  = 'JSON 格式错误，无法格式化：' + e.message
+    jsonErrorPos.value = parseJsonErrorPosition(editContent.value, e)
+    jsonValidErr.value = formatFriendlyJsonError(editContent.value, e)
+    jumpToJsonError()
   }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function highlightJsonLine(value) {
+  const text = String(value || '')
+  const tokenPattern = /("(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g
+  let html = ''
+  let cursor = 0
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0]
+    const index = match.index ?? 0
+    html += escapeHtml(text.slice(cursor, index))
+    let cls = 'json-number'
+    if (token.startsWith('"')) cls = /:\s*$/.test(token) ? 'json-key' : 'json-string'
+    else if (token === 'true' || token === 'false') cls = 'json-bool'
+    else if (token === 'null') cls = 'json-null'
+    html += `<span class="${cls}">${escapeHtml(token)}</span>`
+    cursor = index + token.length
+  }
+  html += escapeHtml(text.slice(cursor))
+  return html
+}
+
+function highlightJson(value, errorLine = 0) {
+  const text = String(value || '')
+  if (!text) return '<span class="json-line"><span class="json-muted">{}</span></span>'
+  return text.split('\n').map((line, index) => {
+    const lineNo = index + 1
+    const cls = lineNo === errorLine ? 'json-line is-error' : 'json-line'
+    return `<span class="${cls}">${highlightJsonLine(line) || '&nbsp;'}</span>`
+  }).join('')
+}
+
+function parseJsonErrorPosition(text, err) {
+  const msg = String(err?.message || '')
+  const lineCol = msg.match(/line\s+(\d+)\s+column\s+(\d+)/i)
+  if (lineCol) {
+    const line = Number(lineCol[1])
+    const col = Number(lineCol[2])
+    const lines = String(text || '').split('\n')
+    const idx = lines.slice(0, Math.max(0, line - 1)).reduce((sum, lineText) => sum + lineText.length + 1, 0) + Math.max(0, col - 1)
+    return { idx: Math.min(idx, text.length), line, col }
+  }
+
+  const posMatch = msg.match(/position\s+(\d+)/i)
+  if (!posMatch) return null
+  const idx = Math.min(Number(posMatch[1]), text.length)
+  if (!Number.isFinite(idx) || idx < 0) return null
+  const head = text.slice(0, idx)
+  const lines = head.split('\n')
+  return {
+    idx,
+    line: lines.length,
+    col: lines[lines.length - 1].length + 1,
+  }
+}
+
+function clampJsonContextLine(lineText, col = 1, isError = false) {
+  const text = String(lineText ?? '')
+  if (text.length <= 160) return { text, col }
+  if (!isError) return { text: `${text.slice(0, 157)}...`, col: 1 }
+  const safeCol = Math.max(1, col || 1)
+  const start = Math.max(0, safeCol - 81)
+  const end = Math.min(text.length, start + 160)
+  const prefix = start > 0 ? '...' : ''
+  const suffix = end < text.length ? '...' : ''
+  return {
+    text: `${prefix}${text.slice(start, end)}${suffix}`,
+    col: safeCol - start + prefix.length,
+  }
+}
+
+function getJsonErrorContext(text, pos, radius = 2) {
+  if (!pos) return []
+  const lines = String(text || '').split('\n')
+  const errorLine = Math.max(1, pos.line || 1)
+  const start = Math.max(1, errorLine - radius)
+  const end = Math.min(lines.length, errorLine + radius)
+  const rows = []
+  for (let lineNo = start; lineNo <= end; lineNo += 1) {
+    const isError = lineNo === errorLine
+    const lineInfo = clampJsonContextLine(lines[lineNo - 1] ?? '', pos.col || 1, isError)
+    rows.push({ line: lineNo, text: lineInfo.text, isError })
+    if (isError) rows.push({ line: lineNo, isCaret: true, col: lineInfo.col })
+  }
+  return rows
+}
+
+function friendlyJsonHint(err) {
+  const msg = String(err?.message || '')
+  if (/Expected double-quoted property name/i.test(msg)) {
+    return '对象属性名必须使用英文双引号，也可能是上一项末尾多了逗号。'
+  }
+  if (/Unexpected end of JSON input/i.test(msg)) {
+    return '内容还没有写完整，请检查结尾处是否缺少括号、方括号或引号。'
+  }
+  if (/Unterminated string/i.test(msg)) {
+    return '字符串没有正确结束，请检查是否缺少英文双引号。'
+  }
+  if (/Bad control character/i.test(msg)) {
+    return '字符串中包含未转义的换行或控制字符。'
+  }
+  if (/Unexpected token/i.test(msg) && /}/.test(msg)) {
+    return '可能存在多余逗号，或对象里缺少有效的键值对。'
+  }
+  if (/Unexpected string/i.test(msg)) {
+    return '可能缺少逗号，或键和值之间缺少冒号。'
+  }
+  if (/Unexpected non-whitespace character/i.test(msg)) {
+    return 'JSON 根节点后面还有多余内容。'
+  }
+  return '请检查逗号、冒号、英文双引号和括号是否成对。'
+}
+
+function formatFriendlyJsonError(text, err) {
+  const pos = parseJsonErrorPosition(text, err)
+  const hint = friendlyJsonHint(err)
+  return pos
+    ? `JSON 格式不正确：第 ${pos.line} 行，第 ${pos.col} 列附近。${hint}`
+    : `JSON 格式不正确：${hint}`
+}
+
+function jumpToJsonError() {
+  const pos = jsonErrorPos.value
+  const el = jsonTextareaEl.value
+  if (!pos || !el) return
+  const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 21
+  const colWidth = Math.max(7, (parseFloat(getComputedStyle(el).fontSize) || 13) * 0.62)
+  el.focus()
+  el.scrollTop = Math.max(0, (pos.line - 3) * lineHeight)
+  el.scrollLeft = Math.max(0, (pos.col - 36) * colWidth)
+  el.setSelectionRange(pos.idx ?? 0, pos.idx ?? 0)
+  syncJsonScroll({ target: el })
+}
+
+function syncJsonScroll(event) {
+  const source = event?.target
+  const target = jsonHighlightEl.value
+  if (!source || !target) return
+  target.scrollTop = source.scrollTop
+  target.scrollLeft = source.scrollLeft
+  if (jsonLineGutterEl.value) jsonLineGutterEl.value.scrollTop = source.scrollTop
+}
+
+function insertJsonIndent(event) {
+  const el = event.target
+  const start = el.selectionStart
+  const end = el.selectionEnd
+  editContent.value = editContent.value.slice(0, start) + '  ' + editContent.value.slice(end)
+  validateJson()
+  nextTick(() => {
+    el.selectionStart = start + 2
+    el.selectionEnd = start + 2
+    syncJsonScroll({ target: el })
+  })
 }
 
 // ── 删除对话框 ──
@@ -916,23 +917,6 @@ const flatTree = computed(() => {
   return result
 })
 
-function catIcon(key) {
-  return { worlds: '🌍', configs: '⚙️', logs: '📋', plugins: '🧩', databases: '🗄️' }[key] ?? '📁'
-}
-
-function fileIcon(name) {
-  if (!name) return '📃'
-  const ext = name.split('.').pop()?.toLowerCase()
-  if (ext === 'wld')                                      return '🌐'
-  if (ext === 'json')                                     return '📄'
-  if (ext === 'txt' || ext === 'log')                     return '📝'
-  if (ext === 'dll')                                      return '🔧'
-  if (ext === 'exe')                                      return '⚙️'
-  if (['zip','rar','7z'].includes(ext))                   return '📦'
-  if (['sqlite','db','db3'].includes(ext))                return '🗄️'
-  return '📃'
-}
-
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -947,18 +931,15 @@ function shortDir(dir) {
   return parts.slice(-2).join('/')
 }
 
-// ── 插件操作（功能暂留空）──
-function enablePlugin(_f)     { /* 待实现 */ }
-function disablePlugin(_f)    { /* 待实现 */ }
-function editPluginConfig(_f) { /* 待实现 */ }
-
 // ── 通用文件管理 ──
 function editFile(f) {
+  if (!canWriteFiles.value) { toast.warning('缺少文件写入权限'); return }
   editingFile.value    = f
   editContent.value    = ''
   editorError.value    = ''
   editorIsBinary.value = false
   jsonValidErr.value   = ''
+  jsonErrorPos.value   = null
   editorLoading.value  = true
   window.__tshockSend?.({
     type: 'file_read', msg_id: Date.now().toString(), timestamp: Date.now(),
@@ -973,16 +954,22 @@ function closeEditor() {
   editorError.value    = ''
   editorIsBinary.value = false
   jsonValidErr.value   = ''
-  jsonErrLine.value    = 0
+  jsonErrorPos.value   = null
   editorLoading.value  = false
 }
 
 function saveFile() {
+  if (!canWriteFiles.value) { editorError.value = '缺少文件写入权限'; return }
   if (!editingFile.value) return
   // JSON 保存前校验语法
   if (isEditingJson.value) {
     try { JSON.parse(editContent.value) }
-    catch (e) { editorError.value = 'JSON 语法错误，请修正后再保存：' + e.message; return }
+    catch (e) {
+      jsonErrorPos.value = parseJsonErrorPosition(editContent.value, e)
+      jsonValidErr.value = formatFriendlyJsonError(editContent.value, e)
+      jumpToJsonError()
+      return
+    }
   }
   editorSaving.value = true
   editorError.value  = ''
@@ -993,10 +980,12 @@ function saveFile() {
 }
 
 function deleteFile(f) {
+  if (!canDeleteFiles.value) { toast.warning('缺少文件删除权限'); return }
   deleteTarget.value = f
 }
 
 function doDelete() {
+  if (!canDeleteFiles.value) { toast.warning('缺少文件删除权限'); return }
   if (!deleteTarget.value) return
   deleteBusy.value = true
   window.__tshockSend?.({
@@ -1042,73 +1031,6 @@ function onWsMessage(e) {
       editorIsBinary.value = p.binary === true
       editorError.value    = editorIsBinary.value ? '' : (p.msg || '读取失败')
     }
-    return
-  }
-
-  if (pkt.type === 'db_query_resp') {
-    const refId = p.ref_id ?? ''
-    if (refId.startsWith('dbtables-')) {
-      dbTablesLoading.value = false
-      if (p.success) {
-        dbTables.value    = (p.rows || []).map(r => r[0])
-        dbTablesErr.value = ''
-        if (dbTables.value.length > 0) selectTable(dbTables.value[0])
-      } else {
-        dbTablesErr.value = p.msg || '获取表列表失败'
-      }
-    } else if (refId.startsWith('dbinfo-')) {
-      if (p.success)
-        dbTableCols.value = (p.rows || []).map(r => ({ cid: r[0], name: r[1], type: r[2] || '', notnull: r[3], dflt: r[4], pk: r[5] }))
-    } else if (refId.startsWith('dbdata-')) {
-      dbTableLoading.value = false
-      if (p.success) {
-        const rows = p.rows || []
-        dbHasMore.value   = rows.length > dbPageSize
-        dbTableRows.value = dbHasMore.value ? rows.slice(0, dbPageSize) : rows
-      } else {
-        dbResultErr.value = p.msg || '查询失败'
-      }
-    } else {
-      dbRunning.value = false
-      if (p.success) { dbResult.value = { type: 'query', columns: p.columns, rows: p.rows, truncated: p.truncated }; dbResultErr.value = '' }
-      else           { dbResultErr.value = p.msg || '查询失败' }
-    }
-    return
-  }
-
-  if (pkt.type === 'db_exec_resp') {
-    dbRunning.value = false
-    if (p.success) { dbResult.value = { type: 'exec', affected: p.affected }; dbResultErr.value = '' }
-    else           { dbResultErr.value = p.msg || '执行失败' }
-    return
-  }
-
-  if (pkt.type === 'db_update_row_resp') {
-    dbEditSaving.value = false
-    if (p.success) {
-      const ec = dbEditCell.value
-      if (ec && dbTableRows.value[ec.rowIdx]) {
-        const row = [...dbTableRows.value[ec.rowIdx]]
-        row[ec.colIdx + 1] = ec.value === '' ? null : ec.value
-        dbTableRows.value[ec.rowIdx] = row
-      }
-      dbEditCell.value = null
-    } else {
-      dbEditCell.value  = null
-      dbResultErr.value = p.msg || '更新失败'
-    }
-    return
-  }
-
-  if (pkt.type === 'db_delete_row_resp') {
-    if (!p.success) { dbResultErr.value = p.msg || '删除失败'; loadTableData() }
-    return
-  }
-
-  if (pkt.type === 'db_insert_row_resp') {
-    dbAddRowSaving.value = false
-    if (p.success) { dbAddRowMode.value = false; dbNewRowValues.value = {}; loadTableData() }
-    else           { dbResultErr.value = p.msg || '插入失败' }
     return
   }
 
@@ -1249,7 +1171,11 @@ onUnmounted(() => {
 .tr-dir  { cursor: pointer; }
 .tr-dir:hover  { background: #f0f9ff; }
 .tr-file:hover { background: #f8fafc; }
-.tr-icon { font-size: 14px; flex-shrink: 0; }
+.tr-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex-shrink: 0; color: #64748b;
+}
+.tr-icon svg { width: 14px; height: 14px; }
 .tr-name {
   flex: 1; overflow: hidden; text-overflow: ellipsis;
 }
@@ -1339,9 +1265,12 @@ onUnmounted(() => {
 }
 .ft-row:hover  { background: #f8fafc; }
 .ft-name  { display: flex; align-items: center; gap: 7px; font-weight: 500; }
-.ft-icon  { font-size: 14px; display: flex; align-items: center; }
-.ft-icon-db { width: 16px; height: 16px; }
-.ft-icon-db svg { width: 14px; height: 14px; stroke: #64748b; }
+.ft-icon  {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; color: #64748b; flex-shrink: 0;
+}
+.ft-icon svg { width: 14px; height: 14px; stroke: currentColor; }
+.ft-icon-db svg { stroke: currentColor; }
 .ft-dir-badge {
   font-size: 10px; color: #64748b;
   background: #f1f5f9; border: 1px solid #e2e8f0;
@@ -1366,13 +1295,16 @@ onUnmounted(() => {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   padding: 48px 0; color: #94a3b8; font-size: 14px;
 }
-.empty-state span { font-size: 28px; }
 .empty-state p    { margin: 0; }
 .empty-state-full {
   display: flex; flex-direction: column; align-items: center; gap: 14px;
   padding: 72px 0; color: #94a3b8;
 }
-.empty-big-icon   { font-size: 52px; }
+.empty-big-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 58px; height: 58px; color: #94a3b8;
+}
+.empty-big-icon svg { width: 52px; height: 52px; }
 .empty-state-full p { margin: 0; font-size: 14px; }
 .btn-fetch {
   padding: 10px 28px; background: #2563eb; color: #fff;
@@ -1408,18 +1340,6 @@ onUnmounted(() => {
 .pr-name  { font-size: 13px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pr-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .pr-size  { font-size: 12px; color: #94a3b8; font-family: 'Courier New', monospace; white-space: nowrap; }
-.pr-actions { display: flex; gap: 6px; }
-.pr-btn {
-  padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 500;
-  cursor: pointer; border: 1px solid; transition: all .12s; white-space: nowrap;
-}
-.pr-enable  { background: #f0fdf4; color: #16a34a; border-color: #bbf7d0; }
-.pr-enable:hover  { background: #dcfce7; }
-.pr-disable { background: #fff7ed; color: #ea580c; border-color: #fed7aa; }
-.pr-disable:hover { background: #ffedd5; }
-.pr-cfg     { background: #eff6ff; color: #2563eb; border-color: #bfdbfe; }
-.pr-cfg:hover     { background: #dbeafe; }
-
 /* ── 配置文件行（带编辑列）── */
 .cfg-head { grid-template-columns: 1fr 110px 185px 72px !important; }
 .cfg-row  { grid-template-columns: 1fr 110px 185px 72px !important; }
@@ -1450,242 +1370,27 @@ onUnmounted(() => {
 .mr-date { color: #94a3b8; font-size: 12px; }
 .mr-actions { display: flex; align-items: center; justify-content: center; }
 .mr-edit-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 24px;
   padding: 3px 7px; border-radius: 5px; font-size: 12px;
   background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0;
   cursor: pointer; transition: all .12s; line-height: 1;
   opacity: 0; white-space: nowrap;
 }
+.mr-edit-btn svg { width: 13px; height: 13px; }
 .mgmt-row:hover .mr-edit-btn { opacity: 1; }
 .mr-edit-btn:hover { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
+.mr-edit-btn:disabled {
+  opacity: .35;
+  cursor: not-allowed;
+  background: #f8fafc;
+  color: #94a3b8;
+}
 .mr-db-btn {
   display: inline-flex !important; align-items: center; gap: 4px;
 }
 .mr-db-btn svg { width: 12px; height: 12px; }
 .mr-db-btn:hover   { background: #fef3c7; color: #92400e; border-color: #fde68a; }
-
-/* ── JSON 跳转按钮 ── */
-.em-json-warn {
-  margin: 8px 20px 0; padding: 8px 14px;
-  background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;
-  color: #92400e; font-size: 12px; flex-shrink: 0;
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-}
-.em-jump-btn {
-  padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 600;
-  background: #fbbf24; color: #78350f; border: none; cursor: pointer;
-  white-space: nowrap; transition: background .12s; flex-shrink: 0;
-}
-.em-jump-btn:hover { background: #f59e0b; }
-
-/* ── 数据库浏览器（可视化/SQL 双模式） ── */
-.db-modal {
-  background: #fff; border-radius: 14px;
-  width: min(95vw, 1160px); height: min(88vh, 800px);
-  display: flex; flex-direction: column;
-  box-shadow: 0 25px 60px rgba(0,0,0,.25);
-}
-.db-header {
-  display: flex; align-items: center; gap: 10px;
-  padding: 14px 18px; border-bottom: 1px solid #e2e8f0; flex-shrink: 0;
-}
-.db-title-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-.db-icon {
-  display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; background: #f0fdf4; border-radius: 6px; flex-shrink: 0;
-}
-.db-icon svg { width: 16px; height: 16px; stroke: #16a34a; }
-.db-filename { font-size: 15px; font-weight: 700; color: #0f172a; font-family: 'Courier New', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.db-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; flex-shrink: 0; }
-.db-header-tabs { display: flex; gap: 4px; flex-shrink: 0; }
-.db-view-btn {
-  padding: 6px 12px; border-radius: 7px; font-size: 12px; font-weight: 500;
-  background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0;
-  cursor: pointer; transition: all .12s; white-space: nowrap;
-  display: inline-flex; align-items: center; gap: 5px;
-}
-.db-view-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
-.db-view-btn:hover  { background: #e2e8f0; }
-.db-view-btn.active { background: #eff6ff; color: #2563eb; border-color: #93c5fd; font-weight: 700; }
-
-/* ── 双栏布局 ── */
-.db-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
-
-/* 左侧表列表 */
-.db-sidebar {
-  width: 160px; flex-shrink: 0; border-right: 1px solid #e2e8f0;
-  overflow-y: auto; display: flex; flex-direction: column; background: #f8fafc;
-}
-.db-sidebar-hd {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 12px 8px;
-  font-size: 11px; font-weight: 700; color: #64748b;
-  letter-spacing: .06em; text-transform: uppercase;
-  border-bottom: 1px solid #e2e8f0; flex-shrink: 0;
-}
-.db-tbl-item {
-  display: flex; align-items: flex-start; gap: 5px;
-  padding: 8px 12px; font-size: 12px; color: #334155;
-  cursor: pointer; background: none; border: none; text-align: left; width: 100%;
-  border-bottom: 1px solid #f1f5f9; transition: background .1s; word-break: break-all;
-}
-.db-tbl-item:hover  { background: #eff6ff; color: #2563eb; }
-.db-tbl-item.active { background: #eff6ff; color: #2563eb; font-weight: 700; border-left: 3px solid #3b82f6; }
-.db-sidebar-empty { padding: 18px 12px; font-size: 11px; color: #94a3b8; text-align: center; }
-.db-sidebar-err   { padding: 8px 12px; font-size: 12px; color: #dc2626; }
-
-/* 右侧主区 */
-.db-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-
-/* SQL 模式 */
-.db-sql-wrap {
-  display: flex; gap: 10px; align-items: flex-start;
-  padding: 12px 16px; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;
-}
-.db-sql-input {
-  flex: 1; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 8px;
-  font-family: 'Courier New', monospace; font-size: 13px; color: #1e293b;
-  resize: none; outline: none; background: #f8fafc; line-height: 1.5;
-}
-.db-sql-input:focus { border-color: #93c5fd; background: #fff; }
-.db-sql-btns { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
-.db-run-btn {
-  padding: 8px 18px; background: #2563eb; color: #fff;
-  border: none; border-radius: 7px; font-size: 13px; font-weight: 600;
-  cursor: pointer; white-space: nowrap; transition: background .12s;
-}
-.db-run-btn:hover:not(:disabled) { background: #1d4ed8; }
-.db-run-btn:disabled { opacity: .5; cursor: not-allowed; }
-.db-clear-btn {
-  padding: 6px 14px; background: #f1f5f9; color: #64748b;
-  border: 1px solid #e2e8f0; border-radius: 7px; font-size: 12px;
-  cursor: pointer; transition: all .12s; text-align: center;
-}
-.db-clear-btn:hover { background: #e2e8f0; }
-
-/* 表格模式工具栏 */
-.db-tbl-toolbar {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px 14px; border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0; background: #f8fafc; min-height: 44px;
-}
-.db-tbl-name { font-size: 14px; font-weight: 700; color: #0f172a; font-family: 'Courier New', monospace; }
-.db-col-badge {
-  font-size: 11px; color: #64748b;
-  background: #e2e8f0; border-radius: 4px; padding: 1px 7px; font-weight: 600;
-}
-.db-spacer { flex: 1; }
-.db-tbl-err { font-size: 12px; color: #dc2626; }
-.db-add-row-btn {
-  padding: 5px 12px; background: #ecfdf5; color: #15803d; border: 1px solid #86efac;
-  border-radius: 6px; font-size: 12px; font-weight: 600;
-  cursor: pointer; transition: all .12s; white-space: nowrap;
-}
-.db-add-row-btn:hover:not(:disabled) { background: #dcfce7; }
-.db-add-row-btn:disabled { opacity: .5; cursor: not-allowed; }
-.db-pg-btn {
-  padding: 4px 10px; background: #fff; color: #475569;
-  border: 1px solid #e2e8f0; border-radius: 6px; font-size: 14px;
-  cursor: pointer; transition: all .12s;
-}
-.db-pg-btn:hover:not(:disabled) { background: #f1f5f9; }
-.db-pg-btn:disabled { opacity: .4; cursor: not-allowed; }
-.db-pg-info { font-size: 12px; color: #64748b; white-space: nowrap; }
-.db-reload-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 5px 8px; background: #fff; color: #64748b;
-  border: 1px solid #e2e8f0; border-radius: 6px;
-  cursor: pointer; transition: all .12s;
-}
-.db-reload-btn:hover:not(:disabled) { background: #f1f5f9; }
-.db-reload-btn:disabled { opacity: .4; cursor: not-allowed; }
-
-/* 可视化数据表格 */
-.db-visual-wrap { flex: 1; overflow: auto; }
-.db-visual-table {
-  border-collapse: collapse; font-size: 12px; font-family: 'Courier New', monospace;
-  width: 100%; white-space: nowrap;
-}
-.db-vth {
-  background: #f8fafc; border: 1px solid #e2e8f0;
-  padding: 7px 10px; text-align: left; position: sticky; top: 0; z-index: 1;
-}
-.db-col-nm { font-size: 12px; color: #334155; font-weight: 700; }
-.db-col-tp { font-size: 10px; color: #94a3b8; margin-left: 5px; font-weight: 400; }
-.db-pk {
-  font-size: 10px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a;
-  border-radius: 3px; padding: 1px 4px; margin-left: 4px; font-weight: 700;
-}
-.db-ops-th {
-  background: #f8fafc; border: 1px solid #e2e8f0;
-  padding: 7px 10px; position: sticky; top: 0; z-index: 1;
-  text-align: center; font-size: 11px; color: #94a3b8; width: 48px;
-}
-.db-vtd {
-  border: 1px solid #f1f5f9; padding: 5px 10px; color: #334155;
-  max-width: 260px; cursor: default; user-select: none;
-}
-.db-vtd:hover { background: #f8fafc; }
-.db-cell-active { background: #eff6ff !important; outline: 2px solid #3b82f6; outline-offset: -1px; }
-.db-null { color: #94a3b8 !important; font-style: italic; }
-.db-ops-cell { border: 1px solid #f1f5f9; padding: 3px 6px; text-align: center; }
-.db-add-row-tr { background: #f0fdf4; }
-.db-add-td { border: 1px solid #86efac; padding: 4px 6px; }
-.db-cell-inp {
-  width: 100%; padding: 3px 6px; border: 1px solid #e2e8f0; border-radius: 4px;
-  font-family: 'Courier New', monospace; font-size: 12px; outline: none;
-  background: #fff; box-sizing: border-box;
-}
-.db-cell-inp:focus { border-color: #3b82f6; }
-.db-cell-inp-edit { min-width: 120px; }
-.db-cv { display: block; overflow: hidden; text-overflow: ellipsis; }
-.db-ok-btn {
-  padding: 3px 8px; background: #16a34a; color: #fff;
-  border: none; border-radius: 4px; font-size: 13px; cursor: pointer;
-}
-.db-ok-btn:hover { background: #15803d; }
-.db-cx-btn {
-  padding: 3px 8px; background: #f1f5f9; color: #475569;
-  border: 1px solid #e2e8f0; border-radius: 4px; font-size: 13px; cursor: pointer; margin-left: 4px;
-}
-.db-cx-btn:hover { background: #e2e8f0; }
-.db-del-row-btn {
-  padding: 2px 6px; background: none; color: #94a3b8;
-  border: none; border-radius: 4px; font-size: 13px; cursor: pointer;
-  transition: all .12s; opacity: 0;
-}
-tr:hover .db-del-row-btn { opacity: 1; }
-.db-del-row-btn:hover { background: #fee2e2; color: #dc2626; }
-.db-empty-row { text-align: center; padding: 32px; color: #94a3b8; font-size: 13px; }
-.db-no-table {
-  display: flex; align-items: center; justify-content: center;
-  flex: 1; color: #94a3b8; font-size: 14px;
-}
-
-/* SQL 模式结果区（复用）*/
-.db-result-area { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
-.db-result-loading { display: flex; align-items: center; gap: 12px; padding: 32px; color: #94a3b8; justify-content: center; }
-.db-result-err {
-  margin: 14px 16px; padding: 10px 14px;
-  background: #fff5f5; border: 1px solid #fecaca; border-radius: 8px;
-  color: #dc2626; font-size: 13px; font-family: 'Courier New', monospace;
-}
-.db-result-meta { padding: 10px 16px 6px; font-size: 13px; color: #475569; flex-shrink: 0; }
-.db-truncated-hint { font-size: 11px; color: #f59e0b; margin-left: 8px; font-weight: 600; }
-.db-table-wrap { flex: 1; overflow: auto; padding: 0 16px 12px; }
-.db-table {
-  border-collapse: collapse; font-size: 12px;
-  font-family: 'Courier New', monospace; width: 100%; white-space: nowrap;
-}
-.db-table th {
-  background: #f8fafc; border: 1px solid #e2e8f0;
-  padding: 7px 12px; font-size: 11px; color: #64748b;
-  font-weight: 700; text-align: left; letter-spacing: .04em; text-transform: uppercase;
-  position: sticky; top: 0;
-}
-.db-table td { border: 1px solid #f1f5f9; padding: 5px 12px; color: #334155; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
-.db-table tr:hover td { background: #f8fafc; }
-.db-exec-ok { padding: 24px; font-size: 15px; color: #16a34a; text-align: center; }
-.db-result-empty { padding: 40px; text-align: center; color: #94a3b8; font-size: 13px; }
 
 /* ── 底部选中工具栏 ── */
 .sel-toolbar {
@@ -1708,6 +1413,8 @@ tr:hover .db-del-row-btn { opacity: 1; }
   font-size: 13px; font-weight: 500;
   cursor: pointer; border: 1px solid; transition: all .12s; white-space: nowrap;
 }
+.sel-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
+.sel-btn:disabled { opacity: .45; cursor: not-allowed; }
 .sel-edit  { background: #fff; color: #2563eb; border-color: #bfdbfe; }
 .sel-edit:hover  { background: #eff6ff; }
 .sel-rename   { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
@@ -1734,7 +1441,7 @@ tr:hover .db-del-row-btn { opacity: 1; }
 /* ── 文件编辑模态框 ── */
 .editor-modal {
   background: #fff; border-radius: 14px;
-  width: 100%; max-width: 860px; max-height: 90vh;
+  width: 100%; max-width: 980px; height: min(90vh, 780px);
   display: flex; flex-direction: column;
   box-shadow: 0 25px 60px rgba(0,0,0,.25);
 }
@@ -1752,16 +1459,21 @@ tr:hover .db-del-row-btn { opacity: 1; }
 .em-json   { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
 .em-binary { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .em-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px;
   background: none; border: none; font-size: 18px; color: #94a3b8;
   cursor: pointer; padding: 2px 6px; border-radius: 6px; transition: all .12s; line-height: 1; flex-shrink: 0;
 }
+.em-close svg { width: 16px; height: 16px; }
 .em-close:hover { background: #f1f5f9; color: #0f172a; }
 .em-loading { display: flex; align-items: center; gap: 12px; padding: 40px; color: #94a3b8; font-size: 14px; flex-shrink: 0; }
 .em-error {
+  display: flex; align-items: center; gap: 8px;
   margin: 10px 20px 0; padding: 10px 14px;
   background: #fff5f5; border: 1px solid #fecaca; border-radius: 8px;
   color: #dc2626; font-size: 13px; flex-shrink: 0;
 }
+.em-error svg { width: 15px; height: 15px; flex-shrink: 0; }
 /* 二进制文件不可编辑提示 */
 .em-binary-notice {
   display: flex; align-items: flex-start; gap: 16px;
@@ -1786,15 +1498,196 @@ tr:hover .db-del-row-btn { opacity: 1; }
   overflow-y: auto;
 }
 .em-textarea:focus { border-color: #93c5fd; background: #fff; }
+.em-json-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.em-json-editor {
+  position: relative;
+  flex: 1;
+  min-height: 320px;
+  margin: 12px 16px 0;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #0f172a;
+  overflow: hidden;
+}
+.em-json-editor.invalid {
+  border-color: #fca5a5;
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.16);
+}
+.em-json-gutter {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 2;
+  width: 48px;
+  padding: 16px 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-right: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.96);
+  color: #64748b;
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7875;
+  text-align: right;
+}
+.em-json-gutter span {
+  display: block;
+  height: 21.45px;
+  padding: 0 10px 0 4px;
+  box-sizing: border-box;
+}
+.em-json-gutter span.error {
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.18);
+  font-weight: 700;
+}
+.em-json-highlight,
+.em-json-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 16px 18px 16px 64px;
+  border: none;
+  box-sizing: border-box;
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+.em-json-highlight {
+  color: #cbd5e1;
+  pointer-events: none;
+}
+.em-json-highlight code {
+  font: inherit;
+}
+.em-json-highlight :deep(.json-line) {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  min-height: 1.65em;
+}
+.em-json-highlight :deep(.json-line.is-error) {
+  background: rgba(248, 113, 113, 0.16);
+  box-shadow: inset 3px 0 0 #f87171;
+}
+.em-json-input {
+  resize: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: #f8fafc;
+  -webkit-text-fill-color: transparent;
+}
+.em-json-input::selection {
+  background: rgba(59, 130, 246, 0.35);
+}
+.em-json-input::-webkit-scrollbar,
+.em-json-highlight::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.em-json-input::-webkit-scrollbar-thumb,
+.em-json-highlight::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+}
+.em-json-highlight :deep(.json-key) { color: #93c5fd; }
+.em-json-highlight :deep(.json-string) { color: #86efac; }
+.em-json-highlight :deep(.json-number) { color: #fbbf24; }
+.em-json-highlight :deep(.json-bool) { color: #f0abfc; }
+.em-json-highlight :deep(.json-null) { color: #94a3b8; }
+.em-json-highlight :deep(.json-muted) { color: #64748b; }
+.em-json-err {
+  padding: 10px 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #b91c1c;
+  background: #fef2f2;
+  border-top: 1px solid #fecaca;
+  white-space: pre-wrap;
+  flex-shrink: 0;
+}
+.em-json-err-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.em-json-err-msg {
+  color: #7f1d1d;
+}
+.em-json-err-meta {
+  margin-top: 2px;
+  margin-bottom: 4px;
+  color: #991b1b;
+}
+.em-json-err-jump {
+  flex-shrink: 0;
+  border: 1px solid #f87171;
+  background: #fff;
+  color: #b91c1c;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.em-json-err-jump:hover {
+  background: #fee2e2;
+}
+.em-json-err-context {
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  background: #fff;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 6px 0;
+  margin-top: 8px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.em-json-err-row {
+  display: flex;
+  min-width: max-content;
+  color: #111827;
+  white-space: pre;
+}
+.em-json-err-row.error {
+  background: #fee2e2;
+}
+.em-json-err-row code {
+  font: inherit;
+}
+.em-json-err-no {
+  width: 42px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  text-align: right;
+  color: #94a3b8;
+  user-select: none;
+}
+.em-json-err-caret code {
+  color: #dc2626;
+  font-weight: 700;
+  line-height: 1;
+}
 .em-footer {
   display: flex; gap: 10px; align-items: center;
   padding: 14px 20px; border-top: 1px solid #e2e8f0; flex-shrink: 0;
 }
 .em-fmt-btn {
+  display: inline-flex; align-items: center; gap: 6px;
   padding: 8px 16px; background: #f8fafc; color: #475569;
   border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; font-weight: 500;
   cursor: pointer; transition: all .12s; white-space: nowrap;
 }
+.em-fmt-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
 .em-fmt-btn:hover:not(:disabled) { background: #f0fdf4; color: #16a34a; border-color: #86efac; }
 .em-fmt-btn:disabled { opacity: .5; cursor: not-allowed; }
 .em-save {
@@ -1825,6 +1718,8 @@ tr:hover .db-del-row-btn { opacity: 1; }
   background: #fef2f2; border-radius: 14px;
 }
 .cm-icon svg { width: 28px; height: 28px; stroke: #dc2626; }
+.cm-icon-ok { background: #f0fdf4; }
+.cm-icon-ok svg { stroke: #16a34a; }
 .cm-title { font-size: 18px; font-weight: 700; color: #0f172a; margin-bottom: 10px; }
 .cm-body  { font-size: 14px; color: #64748b; line-height: 1.6; margin-bottom: 24px; }
 .cm-body strong { color: #0f172a; font-family: 'Courier New', monospace; }

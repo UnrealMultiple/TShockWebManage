@@ -20,7 +20,7 @@ class Server(Base):
     agent_key 由 Agent 启动时生成（或在 Agent 配置中预填），
     用户凭此 key 完成"认领"成为 Owner。
     """
-    __tablename__ = "servers"
+    __tablename__ = "Servers"
 
     id          = Column(Integer, primary_key=True, index=True)
     name        = Column(String(64), nullable=False)
@@ -29,7 +29,7 @@ class Server(Base):
     agent_key   = Column(String(64), unique=True, nullable=False, index=True)
     # 对外展示与申请使用的服务器编号（随机且不可预测）
     server_code = Column(String(32), unique=True, nullable=False, index=True)
-    # owner_id 为空表示服务器尚未被认领（不声明 FK，users 表由 raw sqlite3 管理）
+    # owner_id 为空表示服务器尚未被认领（不声明 FK，Users 表由 raw sqlite3 管理）
     owner_id    = Column(Integer, nullable=True)
     created_at  = Column(Integer, nullable=False, default=lambda: int(time.time()))
     # 是否在公共频道展示
@@ -78,12 +78,13 @@ class ServerMember(Base):
     Owner 认领时同样写入一条 role='owner' 的记录，
     便于统一查询"用户参与的所有服务器"。
     """
-    __tablename__ = "server_members"
+    __tablename__ = "ServerMembers"
 
     id        = Column(Integer, primary_key=True)
-    server_id = Column(Integer, ForeignKey("servers.id", ondelete="CASCADE"), nullable=False)
-    user_id   = Column(Integer, nullable=False)  # 指向 users.id，由 raw sqlite3 管理，不声明 FK
+    server_id = Column(Integer, ForeignKey("Servers.id", ondelete="CASCADE"), nullable=False)
+    user_id   = Column(Integer, nullable=False)  # 指向 Users.id，由 raw sqlite3 管理，不声明 FK
     role      = Column(SAEnum(ServerMemberRole), nullable=False, default=ServerMemberRole.member)
+    access_group_id = Column(Integer, nullable=True)
     joined_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
     # 入会来源追踪：public_direct_join / invite_accepted / join_request_approved / owner_claim / legacy
     join_source = Column(String(32), nullable=False, default="legacy")

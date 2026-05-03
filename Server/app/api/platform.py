@@ -16,7 +16,7 @@ from app.models.schemas import UserOut, CloudBlacklistReviewReq
 from app.models.db_models import Server, ServerMember
 from app.models.platform_models import (
     User, AccountRestrictionType, AccountRestriction, Report, OperationLog,
-    PlatformSettings, PlatformUser, Announcement,
+    PlatformSettings, Announcement,
     ReportStatus, OperationType
 )
 from app.api import deps
@@ -78,20 +78,9 @@ def _ensure_platform_permission_group_tables(db: Session):
     _platform_tables_ensured = True
     init_platform_db()
     now = int(time.time())
-    db.execute(text("""
-        DELETE FROM platform_member_roles
-        WHERE group_id IN (
-            SELECT id FROM platform_roles
-            WHERE is_builtin = 1 AND name NOT IN ('超级管理', '管理', '成员')
-        )
-    """))
-    db.execute(text("""
-        DELETE FROM platform_roles
-        WHERE is_builtin = 1 AND name NOT IN ('超级管理', '管理', '成员')
-    """))
     defaults = [
-        ("超级管理", "拥有全部平台权限", ["*"], 1),
-        ("管理", "管理平台服务器、账号、公告、设置与权限组", [
+        ("superadmin", "拥有全部平台权限", ["*"], 1),
+        ("admin", "管理平台服务器、账号、公告、设置与权限组", [
             "platform.dashboard.view",
             "platform.servers.view",
             "platform.servers.audit",
@@ -106,47 +95,34 @@ def _ensure_platform_permission_group_tables(db: Session):
             "platform.settings.manage",
             "platform.rbac.manage",
         ], 1),
-        ("成员", "普通平台账号，无平台后台权限", [], 1),
+        ("default", "普通平台账号，无平台后台权限", [], 1),
     ]
     for name, description, permissions, is_builtin in defaults:
         exists = db.execute(
-            text("SELECT id FROM platform_roles WHERE name=:name"),
+            text("SELECT id FROM AccountAccessGroups WHERE name=:name"),
             {"name": name},
         ).fetchone()
         if not exists:
             db.execute(text("""
-                INSERT INTO platform_roles(name, description, permissions, is_builtin, created_at, updated_at)
-                VALUES(:name, :description, :permissions, :is_builtin, :created_at, :updated_at)
+                INSERT INTO AccountAccessGroups(name, description, permissions, is_builtin)
+                VALUES(:name, :description, :permissions, :is_builtin)
             """), {
                 "name": name,
                 "description": description,
                 "permissions": _permission_dump(permissions),
                 "is_builtin": is_builtin,
-                "created_at": now,
-                "updated_at": now,
             })
         else:
             db.execute(text("""
-                UPDATE platform_roles
-                SET description=:description, permissions=:permissions, is_builtin=:is_builtin, updated_at=:updated_at
+                UPDATE AccountAccessGroups
+                SET description=:description, permissions=:permissions, is_builtin=:is_builtin
                 WHERE name=:name
             """), {
                 "name": name,
                 "description": description,
                 "permissions": _permission_dump(permissions),
                 "is_builtin": is_builtin,
-                "updated_at": now,
             })
-    super_group = db.execute(
-        text("SELECT id FROM platform_roles WHERE name='超级管理'")
-    ).fetchone()
-    if super_group:
-        db.execute(text("""
-            INSERT OR REPLACE INTO platform_member_roles(user_id, group_id, assigned_at)
-            SELECT user_id, :group_id, :assigned_at
-            FROM platform_members
-            WHERE is_platform_admin = 1
-        """), {"group_id": super_group[0], "assigned_at": now})
 
 
 def _pick_related_email(value):
@@ -179,18 +155,14 @@ def _permission_load(value):
     return []
 
 
-def _platform_role_permissions_for_user(conn: sqlite3.Connection, user_id: int) -> list:
-    rows = conn.execute("""
+def _platform_access_group_permissions_for_user(conn: sqlite3.Connection, user_id: int) -> list:
+    row = conn.execute("""
         SELECT g.permissions
-        FROM platform_member_roles ug
-        JOIN platform_roles g ON g.id = ug.group_id
-        WHERE ug.user_id = ?
-    """, (user_id,)).fetchall()
-    permissions = []
-    for row in rows:
-        if row and row[0]:
-            permissions.extend(_permission_load(row[0]))
-    return sorted(set(permissions))
+        FROM users u
+        JOIN AccountAccessGroups g ON g.id = u.access_group_id
+        WHERE u.id = ?
+    """, (user_id,)).fetchone()
+    return sorted(set(_permission_load(row[0]) if row and row[0] else []))
 
 
 @router.get("/me")
@@ -376,18 +348,8 @@ async def hard_delete_server(
     if not server:
         raise HTTPException(status_code=404, detail="服务器不存在")
 
-    group_ids = [
-        row[0] for row in db.execute(
-            text("SELECT id FROM server_roles WHERE server_id = :sid"),
-            {"sid": server_id}
-        ).fetchall()
-    ]
-    if group_ids:
-        placeholders = ",".join(str(int(v)) for v in group_ids)
-        db.execute(text(f"DELETE FROM server_role_permissions WHERE group_id IN ({placeholders})"))
-    db.execute(text("DELETE FROM server_member_roles WHERE server_id = :sid"), {"sid": server_id})
-    db.execute(text("DELETE FROM server_roles WHERE server_id = :sid"), {"sid": server_id})
-    db.execute(text("DELETE FROM server_member_requests WHERE server_id = :sid"), {"sid": server_id})
+    db.execute(text("DELETE FROM ServerAccessGroups WHERE server_id = :sid"), {"sid": server_id})
+    db.execute(text("DELETE FROM ServerMemberRequests WHERE server_id = :sid"), {"sid": server_id})
     db.execute(text("DELETE FROM messages WHERE server_id = :sid"), {"sid": server_id})
     db.execute(text("DELETE FROM announcements WHERE server_id = :sid"), {"sid": server_id})
     db.delete(server)
@@ -556,10 +518,10 @@ def _active_ban_query(db: Session, user_id: int):
 def _platform_groups_for_user(db: Session, user_id: int) -> list:
     _ensure_platform_permission_group_tables(db)
     rows = db.execute(text("""
-        SELECT g.id, g.name, g.description, g.permissions, g.is_builtin, ug.assigned_at
-        FROM platform_member_roles ug
-        JOIN platform_roles g ON g.id = ug.group_id
-        WHERE ug.user_id = :user_id
+        SELECT g.id, g.name, g.description, g.permissions, g.is_builtin, u.created_at
+        FROM users u
+        JOIN AccountAccessGroups g ON g.id = u.access_group_id
+        WHERE u.id = :user_id
         ORDER BY g.is_builtin DESC, g.id ASC
     """), {"user_id": user_id}).fetchall()
     return [
@@ -576,28 +538,7 @@ def _platform_groups_for_user(db: Session, user_id: int) -> list:
 
 
 def _sync_platform_user_from_groups(db: Session, user_id: int):
-    groups = _platform_groups_for_user(db, user_id)
-    has_super = any("*" in group["permissions"] for group in groups)
-    pu = db.query(PlatformUser).filter(PlatformUser.user_id == user_id).first()
-    now = int(time.time())
-    if groups:
-        if pu:
-            pu.is_platform_admin = has_super
-            pu.permissions = _permission_dump([])
-            pu.updated_at = now
-        else:
-            db.add(PlatformUser(
-                user_id=user_id,
-                is_platform_admin=has_super,
-                permissions=_permission_dump([]),
-                created_at=now,
-                updated_at=now,
-            ))
-    elif pu and not _permission_load(pu.permissions):
-        db.delete(pu)
-    elif pu:
-        pu.is_platform_admin = False
-        pu.updated_at = now
+    return None
 
 
 def _user_summary(db: Session, user: User) -> dict:
@@ -610,7 +551,6 @@ def _user_summary(db: Session, user: User) -> dict:
         AccountRestriction.user_id == user.id,
         AccountRestriction.is_active == True,
     ).count()
-    platform_user = db.query(PlatformUser).filter(PlatformUser.user_id == user.id).first()
     platform_groups = _platform_groups_for_user(db, user.id)
     group_names = [group["name"] for group in platform_groups]
     return {
@@ -621,7 +561,7 @@ def _user_summary(db: Session, user: User) -> dict:
         "owned_server_count": owned_count,
         "active_restrictions_count": active_restrictions,
         "is_banned": _active_ban_query(db, user.id).first() is not None,
-        "is_platform_admin": bool(platform_user and platform_user.is_platform_admin) or any("*" in group["permissions"] for group in platform_groups),
+        "is_platform_admin": any("*" in group["permissions"] for group in platform_groups),
         "platform_group_count": len(platform_groups),
         "platform_group_names": group_names,
     }
@@ -804,7 +744,7 @@ async def remove_account_from_server(
         raise HTTPException(status_code=404, detail="该账号不在此服务器中")
 
     character_rows = db.execute(
-        text("SELECT character_name FROM agent_character_bindings_cache WHERE agent_key = :agent_key AND user_id = :uid"),
+        text("SELECT character_name FROM AgentCharacterBindingsCache WHERE agent_key = :agent_key AND user_id = :uid"),
         {"agent_key": server.agent_key, "uid": user_id},
     ).fetchall()
     if server.agent_key in manager.active_agents:
@@ -819,10 +759,9 @@ async def remove_account_from_server(
 
     db.delete(member)
     db.execute(
-        text("DELETE FROM agent_character_bindings_cache WHERE agent_key = :agent_key AND user_id = :uid"),
+        text("DELETE FROM AgentCharacterBindingsCache WHERE agent_key = :agent_key AND user_id = :uid"),
         {"agent_key": server.agent_key, "uid": user_id},
     )
-    db.execute(text("DELETE FROM server_member_roles WHERE server_id = :sid AND user_id = :uid"), {"sid": server_id, "uid": user_id})
     db.add(OperationLog(
         operator_id=current_user["id"],
         operation_type=OperationType.server_update,
@@ -995,7 +934,7 @@ async def list_cloud_blacklist_submissions(
                 c.submitted_at, c.reviewed_by_user_id,
                 ru.email AS reviewed_by_email,
                 c.reviewed_at, c.review_note
-            FROM cloud_blacklist_entries c
+            FROM CloudBlacklistEntries c
             LEFT JOIN servers s ON s.id = c.source_server_id
             LEFT JOIN users su ON su.id = c.submitted_by_user_id
             LEFT JOIN users ru ON ru.id = c.reviewed_by_user_id
@@ -1023,7 +962,7 @@ async def review_cloud_blacklist_submission(
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         cur = conn.execute(
             """
-            UPDATE cloud_blacklist_entries
+            UPDATE CloudBlacklistEntries
             SET status=?, reviewed_by_user_id=?, reviewed_at=?, review_note=?
             WHERE id=? AND status='pending'
             """,
@@ -1041,7 +980,7 @@ async def delete_cloud_blacklist_submission(
     current_user: UserOut = Depends(deps.require_platform_permission("platform.cloud_blacklist.audit")),
 ):
     with sqlite3.connect(AUTH_DB_PATH) as conn:
-        cur = conn.execute("DELETE FROM cloud_blacklist_entries WHERE id=?", (submission_id,))
+        cur = conn.execute("DELETE FROM CloudBlacklistEntries WHERE id=?", (submission_id,))
         conn.commit()
     if int(cur.rowcount or 0) <= 0:
         raise HTTPException(status_code=404, detail="云黑记录不存在")
@@ -1209,9 +1148,10 @@ async def get_platform_stats(
     }
 
     # 用户统计
+    superadmin_group = db.execute(text("SELECT id FROM AccountAccessGroups WHERE name = 'superadmin'")).fetchone()
     user_stats = {
         "total_users": db.query(User).count(),
-        "platform_admins": db.query(PlatformUser).filter(PlatformUser.is_platform_admin == True).count(),
+        "platform_admins": db.query(User).filter(User.access_group_id == superadmin_group[0]).count() if superadmin_group else 0,
         "owners": db.query(Server).filter(Server.owner_id != None).count()
     }
 
@@ -1248,13 +1188,15 @@ def _announcement_receiver_ids(db: Session, target_type: str, server_id: Optiona
             raise HTTPException(status_code=404, detail="服务器不存在")
         # 仅该服务器拥有 panel.announcements 权限的用户
         rows = db.execute(text("""
-            SELECT DISTINCT smpg.user_id
-            FROM server_member_roles smpg
-            JOIN server_role_permissions sgpp ON sgpp.group_id = smpg.group_id
-            WHERE smpg.server_id = :sid
-              AND (sgpp.permission = 'panel.announcements'
-                   OR sgpp.permission = 'panel.*'
-                   OR sgpp.permission = '*')
+            SELECT DISTINCT sm.user_id
+            FROM ServerMembers sm
+            JOIN ServerAccessGroups sg ON sg.id = sm.access_group_id
+            WHERE sm.server_id = :sid
+              AND (
+                sg.permissions LIKE '%"panel.announcements"%'
+                OR sg.permissions LIKE '%"panel.*"%'
+                OR sg.permissions LIKE '%"*"%'
+              )
         """), {"sid": server_id}).fetchall()
         return sorted({int(r[0]) for r in rows})
 
@@ -1568,16 +1510,16 @@ def _group_row_to_dict(row, member_count: int = 0) -> dict:
 
 
 @router.get("/platform-permission-groups")
-async def list_platform_roles(
+async def list_platform_permission_groups(
     current_user: UserOut = Depends(deps.require_platform_permission("platform.rbac.manage")),
     db: Session = Depends(get_db),
 ):
     _ensure_platform_permission_group_tables(db)
     rows = db.execute(text("""
-        SELECT g.id, g.name, g.description, g.permissions, g.is_builtin, g.created_at, g.updated_at,
-               COUNT(ug.user_id) AS member_count
-        FROM platform_roles g
-        LEFT JOIN platform_member_roles ug ON ug.group_id = g.id
+        SELECT g.id, g.name, g.description, g.permissions, g.is_builtin, NULL, NULL,
+               COUNT(u.id) AS member_count
+        FROM AccountAccessGroups g
+        LEFT JOIN users u ON u.access_group_id = g.id
         GROUP BY g.id
         ORDER BY g.is_builtin DESC, g.id ASC
     """)).fetchall()
@@ -1605,14 +1547,12 @@ async def create_platform_permission_group(
         raise HTTPException(status_code=400, detail="permissions 必须是 JSON 数组")
     now = int(time.time())
     db.execute(text("""
-        INSERT INTO platform_roles(name, description, permissions, is_builtin, created_at, updated_at)
-        VALUES(:name, :description, :permissions, 0, :created_at, :updated_at)
+        INSERT INTO AccountAccessGroups(name, description, permissions, is_builtin)
+        VALUES(:name, :description, :permissions, 0)
     """), {
         "name": name.strip(),
         "description": description.strip(),
         "permissions": _permission_dump(parsed),
-        "created_at": now,
-        "updated_at": now,
     })
     db.commit()
     return {"message": "平台权限组已创建"}
@@ -1628,7 +1568,7 @@ async def update_platform_permission_group(
     db: Session = Depends(get_db),
 ):
     _ensure_platform_permission_group_tables(db)
-    row = db.execute(text("SELECT id FROM platform_roles WHERE id=:id"), {"id": group_id}).fetchone()
+    row = db.execute(text("SELECT id FROM AccountAccessGroups WHERE id=:id"), {"id": group_id}).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="平台权限组不存在")
     try:
@@ -1638,15 +1578,14 @@ async def update_platform_permission_group(
     if not isinstance(parsed, list):
         raise HTTPException(status_code=400, detail="permissions 必须是 JSON 数组")
     db.execute(text("""
-        UPDATE platform_roles
-        SET name=:name, description=:description, permissions=:permissions, updated_at=:updated_at
+        UPDATE AccountAccessGroups
+        SET name=:name, description=:description, permissions=:permissions
         WHERE id=:id
     """), {
         "id": group_id,
         "name": name.strip(),
         "description": description.strip(),
         "permissions": _permission_dump(parsed),
-        "updated_at": int(time.time()),
     })
     db.commit()
     return {"message": "平台权限组已更新"}
@@ -1660,15 +1599,15 @@ async def delete_platform_permission_group(
 ):
     _ensure_platform_permission_group_tables(db)
     row = db.execute(
-        text("SELECT is_builtin FROM platform_roles WHERE id=:id"),
+        text("SELECT is_builtin FROM AccountAccessGroups WHERE id=:id"),
         {"id": group_id},
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="平台权限组不存在")
     if row[0]:
         raise HTTPException(status_code=400, detail="内置平台权限组不可删除")
-    db.execute(text("DELETE FROM platform_member_roles WHERE group_id=:id"), {"id": group_id})
-    db.execute(text("DELETE FROM platform_roles WHERE id=:id"), {"id": group_id})
+    db.execute(text("UPDATE users SET access_group_id=NULL WHERE access_group_id=:id"), {"id": group_id})
+    db.execute(text("DELETE FROM AccountAccessGroups WHERE id=:id"), {"id": group_id})
     db.commit()
     return None
 
@@ -1681,11 +1620,10 @@ async def list_platform_permission_group_members(
 ):
     _ensure_platform_permission_group_tables(db)
     rows = db.execute(text("""
-        SELECT u.id, u.email, u.created_at, ug.assigned_at
-        FROM platform_member_roles ug
-        JOIN users u ON u.id = ug.user_id
-        WHERE ug.group_id = :group_id
-        ORDER BY ug.assigned_at DESC
+        SELECT u.id, u.email, u.created_at, u.created_at
+        FROM users u
+        WHERE u.access_group_id = :group_id
+        ORDER BY u.created_at DESC
     """), {"group_id": group_id}).fetchall()
     return [
         {"user_id": row[0], "email": row[1], "created_at": row[2], "assigned_at": row[3]}
@@ -1701,18 +1639,13 @@ async def assign_platform_permission_group_member(
     db: Session = Depends(get_db),
 ):
     _ensure_platform_permission_group_tables(db)
-    group = db.execute(text("SELECT permissions FROM platform_roles WHERE id=:id"), {"id": group_id}).fetchone()
+    group = db.execute(text("SELECT permissions FROM AccountAccessGroups WHERE id=:id"), {"id": group_id}).fetchone()
     if not group:
         raise HTTPException(status_code=404, detail="平台权限组不存在")
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="账号不存在")
-    now = int(time.time())
-    db.execute(text("""
-        INSERT OR REPLACE INTO platform_member_roles(user_id, group_id, assigned_at)
-        VALUES(:user_id, :group_id, :assigned_at)
-    """), {"user_id": user_id, "group_id": group_id, "assigned_at": now})
-    _sync_platform_user_from_groups(db, user_id)
+    db.execute(text("UPDATE users SET access_group_id=:group_id WHERE id=:user_id"), {"user_id": user_id, "group_id": group_id})
     db.commit()
     return {"message": "成员已加入平台权限组"}
 
@@ -1725,11 +1658,11 @@ async def remove_platform_permission_group_member(
     db: Session = Depends(get_db),
 ):
     _ensure_platform_permission_group_tables(db)
+    default_group = db.execute(text("SELECT id FROM AccountAccessGroups WHERE name='default'")).fetchone()
     db.execute(
-        text("DELETE FROM platform_member_roles WHERE user_id=:user_id AND group_id=:group_id"),
-        {"user_id": user_id, "group_id": group_id},
+        text("UPDATE users SET access_group_id=:default_group WHERE id=:user_id"),
+        {"user_id": user_id, "default_group": default_group[0] if default_group else None},
     )
-    _sync_platform_user_from_groups(db, user_id)
     db.commit()
     return None
 
@@ -1744,21 +1677,22 @@ async def list_platform_members(
     列表平台用户
     仅平台管理员可访问
     """
-    query = db.query(PlatformUser).join(User, PlatformUser.user_id == User.id)
-
-    platform_members = query.offset(skip).limit(limit).all()
+    query = db.query(User).filter(User.access_group_id.isnot(None))
+    users = query.offset(skip).limit(limit).all()
 
     result = []
-    for pu in platform_members:
+    for user in users:
+        groups = _platform_groups_for_user(db, int(user.id))
+        permissions = sorted({p for group in groups for p in group["permissions"]})
         result.append({
-            "id": pu.id,
-            "user_id": pu.user_id,
-            "username": _pick_related_email(pu.user),
-            "email": _pick_related_email(pu.user),
-            "is_platform_admin": pu.is_platform_admin,
-            "permissions": _permission_load(pu.permissions),
-            "created_at": pu.created_at,
-            "updated_at": pu.updated_at
+            "id": user.id,
+            "user_id": user.id,
+            "username": user.email,
+            "email": user.email,
+            "is_platform_admin": "*" in permissions,
+            "permissions": permissions,
+            "created_at": user.created_at,
+            "updated_at": user.created_at
         })
 
     return result
@@ -1774,18 +1708,10 @@ async def grant_platform_admin(
     授予平台管理员权限
     仅平台管理员可访问
     """
-    # 检查是否已经是管理员
-    existing = db.query(PlatformUser).filter(PlatformUser.user_id == user_id).first()
-
-    if existing:
-        existing.is_platform_admin = True
-    else:
-        pu = PlatformUser(
-            user_id=user_id,
-            is_platform_admin=True,
-            permissions=_permission_dump([])
-        )
-        db.add(pu)
+    group = db.execute(text("SELECT id FROM AccountAccessGroups WHERE name='superadmin'")).fetchone()
+    if not group:
+        raise HTTPException(status_code=500, detail="超级管理员权限组不存在")
+    db.execute(text("UPDATE users SET access_group_id=:gid WHERE id=:uid"), {"gid": group[0], "uid": user_id})
 
     # 记录操作日志
     log = OperationLog(
@@ -1812,11 +1738,8 @@ async def revoke_platform_admin(
     撤销平台管理员权限
     仅平台管理员可访问
     """
-    pu = db.query(PlatformUser).filter(PlatformUser.user_id == user_id).first()
-    if not pu:
-        raise HTTPException(status_code=404, detail="用户不是平台管理员")
-
-    pu.is_platform_admin = False
+    group = db.execute(text("SELECT id FROM AccountAccessGroups WHERE name='default'")).fetchone()
+    db.execute(text("UPDATE users SET access_group_id=:gid WHERE id=:uid"), {"gid": group[0] if group else None, "uid": user_id})
 
     # 记录操作日志
     log = OperationLog(
@@ -1848,26 +1771,4 @@ async def update_platform_user_permissions(
         raise HTTPException(status_code=400, detail="permissions 必须是 JSON 数组")
     parsed = [str(v) for v in parsed if v]
 
-    pu = db.query(PlatformUser).filter(PlatformUser.user_id == user_id).first()
-    if not pu:
-        pu = PlatformUser(
-            user_id=user_id,
-            is_platform_admin=False,
-            permissions=_permission_dump(parsed),
-        )
-        db.add(pu)
-    else:
-        pu.permissions = _permission_dump(parsed)
-        pu.updated_at = int(time.time())
-
-    log = OperationLog(
-        operator_id=current_user["id"],
-        operation_type=OperationType.server_update,
-        target_type="target_platform_permissions",
-        target_id=user_id,
-        details=f"更新平台权限: {', '.join(parsed) if parsed else '(空)'}",
-        ip_address=None,
-    )
-    db.add(log)
-    db.commit()
-    return {"message": "平台权限已更新", "permissions": parsed}
+    raise HTTPException(status_code=400, detail="账号权限请通过权限组管理")

@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using TShockAPI;
@@ -272,6 +274,27 @@ namespace TerrariaManagerAgent.Services.Handlers
             if (string.IsNullOrEmpty(filename))
                 filename = Environment.OSVersion.Platform == PlatformID.Win32NT ? "start.bat" : "start.sh";
 
+            var isWindows = Environment.OSVersion.Platform == PlatformID.Win32NT;
+            if (!IsAllowedStartupScriptName(filename, isWindows))
+            {
+                await _wsService.SendAsync(new {
+                    type = "write_startup_script_resp", msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = "启动脚本文件名不合法" }
+                });
+                return;
+            }
+
+            if (!ValidateStartupScriptContent(content, isWindows, out var validationMsg))
+            {
+                await _wsService.SendAsync(new {
+                    type = "write_startup_script_resp", msg_id = Guid.NewGuid().ToString("N"),
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new { ref_id = envelope.MsgId, success = false, msg = validationMsg }
+                });
+                return;
+            }
+
             var filePath = Path.Combine(serverDir, filename);
             if (!IsPathSafe(filePath))
             {
@@ -289,7 +312,7 @@ namespace TerrariaManagerAgent.Services.Handlers
                 File.WriteAllText(filePath, content, new System.Text.UTF8Encoding(false));
 
                 // Linux 环境下自动赋予可执行权限
-                if (Environment.OSVersion.Platform != PlatformID.Win32NT && filename.EndsWith(".sh"))
+                if (!isWindows && filename.EndsWith(".sh"))
                 {
                     try
                     {
@@ -317,6 +340,159 @@ namespace TerrariaManagerAgent.Services.Handlers
                     payload = new { ref_id = envelope.MsgId, success = false, msg = ex.Message }
                 });
             }
+        }
+
+        private static bool IsAllowedStartupScriptName(string filename, bool isWindows)
+        {
+            if (string.IsNullOrWhiteSpace(filename)) return false;
+            if (Path.GetFileName(filename) != filename) return false;
+            var allowed = isWindows ? WinScriptNames : LinuxScriptNames;
+            return allowed.Contains(filename, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static bool ValidateStartupScriptContent(string content, bool isWindows, out string msg)
+        {
+            msg = "";
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                msg = "启动脚本内容不能为空";
+                return false;
+            }
+
+            var lines = content
+                .Replace("\r\n", "\n")
+                .Replace('\r', '\n')
+                .Split('\n')
+                .Select(x => x.Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+
+            if (lines.Count == 0)
+            {
+                msg = "启动脚本内容不能为空";
+                return false;
+            }
+
+            return isWindows
+                ? ValidateWindowsStartupScript(lines, out msg)
+                : ValidateLinuxStartupScript(lines, out msg);
+        }
+
+        private static bool ValidateWindowsStartupScript(List<string> lines, out string msg)
+        {
+            msg = "";
+            var commandCount = 0;
+            var allowedLines = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "@echo off",
+                "cls",
+                ":start",
+                "@echo.",
+                "@echo Restarting server...",
+                "goto start",
+                "pause",
+            };
+
+            foreach (var line in lines)
+            {
+                if (line.StartsWith("TShock.Server.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    commandCount++;
+                    if (commandCount > 1)
+                    {
+                        msg = "启动脚本只能包含一条 TShock.Server.exe 启动命令";
+                        return false;
+                    }
+                    if (line.Length > "TShock.Server.exe".Length && !char.IsWhiteSpace(line["TShock.Server.exe".Length]))
+                    {
+                        msg = "启动命令必须直接调用 TShock.Server.exe";
+                        return false;
+                    }
+                    if (ContainsWindowsShellOperator(line))
+                    {
+                        msg = "启动参数包含不允许的命令连接符或环境变量符号";
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (!allowedLines.Contains(line))
+                {
+                    msg = $"启动脚本包含不允许的命令: {line}";
+                    return false;
+                }
+            }
+
+            if (commandCount == 0)
+            {
+                msg = "启动脚本必须包含 TShock.Server.exe 启动命令";
+                return false;
+            }
+            return true;
+        }
+
+        private static bool ValidateLinuxStartupScript(List<string> lines, out string msg)
+        {
+            msg = "";
+            var commandCount = 0;
+            var allowedLines = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "#!/bin/bash",
+                "while true; do",
+                "echo \"Server exited, restarting in 2s...\"",
+                "sleep 2",
+                "done",
+            };
+
+            foreach (var line in lines)
+            {
+                var isCommand = line.StartsWith("./TShock.Server", StringComparison.Ordinal)
+                    || line.StartsWith("TShock.Server", StringComparison.Ordinal);
+                if (isCommand)
+                {
+                    var exe = line.StartsWith("./TShock.Server", StringComparison.Ordinal) ? "./TShock.Server" : "TShock.Server";
+                    commandCount++;
+                    if (commandCount > 1)
+                    {
+                        msg = "启动脚本只能包含一条 TShock.Server 启动命令";
+                        return false;
+                    }
+                    if (line.Length > exe.Length && !char.IsWhiteSpace(line[exe.Length]))
+                    {
+                        msg = "启动命令必须直接调用 TShock.Server";
+                        return false;
+                    }
+                    if (ContainsLinuxShellOperator(line))
+                    {
+                        msg = "启动参数包含不允许的 Shell 控制符";
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (!allowedLines.Contains(line))
+                {
+                    msg = $"启动脚本包含不允许的命令: {line}";
+                    return false;
+                }
+            }
+
+            if (commandCount == 0)
+            {
+                msg = "启动脚本必须包含 TShock.Server 启动命令";
+                return false;
+            }
+            return true;
+        }
+
+        private static bool ContainsWindowsShellOperator(string line)
+        {
+            return line.IndexOfAny(new[] { '&', '|', '<', '>', '^', '%' }) >= 0;
+        }
+
+        private static bool ContainsLinuxShellOperator(string line)
+        {
+            return line.IndexOfAny(new[] { ';', '&', '|', '<', '>', '`', '$' }) >= 0;
         }
 
         public async Task HandleReadTShockConfig(PacketEnvelope envelope)
