@@ -74,8 +74,6 @@ class ServerUpdateReq(BaseModel):
     qq_group:     Optional[str]  = Field(None, max_length=20)
     game_version: Optional[str]  = Field(None, max_length=50)
     show_ip:      Optional[bool] = None
-    local_start_enabled: Optional[bool] = None
-    local_start_path:    Optional[str]  = Field(None, max_length=512)
 
 class ServerMemberOut(BaseModel):
     user_id:        int
@@ -115,9 +113,6 @@ class ServerOut(BaseModel):
     platform_audit_status: str = "pending"
     platform_audit_reason: Optional[str] = None
     platform_is_public: bool = False
-    # 同机直接启动配置
-    local_start_enabled: bool = False
-    local_start_path:    str  = ""
 
 class ServerDetailOut(ServerOut):
     members: List[ServerMemberOut] = []

@@ -63,8 +63,7 @@ namespace TerrariaManagerAgent.Services.Handlers
         public async Task HandleFileList(PacketEnvelope envelope)
         {
             string serverDir = GetServerDir();
-            var rawSave  = TShock.SavePath ?? "tshock";
-            var savePath = Path.IsPathRooted(rawSave) ? rawSave : Path.Combine(serverDir, rawSave);
+            var savePath = Path.GetFullPath(TShock.SavePath ?? "tshock");
 
             var tree = BuildDirTree(serverDir, 0, 4);
 
@@ -73,7 +72,7 @@ namespace TerrariaManagerAgent.Services.Handlers
             var worldDirs  = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
                 serverDir,
-                Directory.GetCurrentDirectory()
+                savePath
             };
             if (!string.IsNullOrEmpty(Main.worldPathName))
             {

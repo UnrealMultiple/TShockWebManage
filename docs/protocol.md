@@ -477,10 +477,3 @@
 1. `4001`: Web 端未授权
 2. `4003`: Agent 缺少 `agent_key`
 3. 业务失败通常通过 `*_resp.payload.success=false` + `msg/output` 返回
-
-## 7. 兼容与扩展建议
-
-1. 新增 WS 类型时，保持 `msg_id/ref_id` 关联机制不变。
-2. 新增 HTTP 接口时，统一 Bearer 鉴权与错误格式。
-3. 建议在前端按 `type` + `ref_id` 做回执分发，避免并发请求串包。
-4. 生产环境建议启用 HTTPS/WSS，避免混合内容问题。

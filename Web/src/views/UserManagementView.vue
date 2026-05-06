@@ -10,7 +10,9 @@
       </template>
     </PageHeader>
 
-    <div class="um-body">
+    <AgentOfflineNotice v-if="activeKey && !agentOnline" />
+
+    <div v-else class="um-body">
 
     <!-- 无服务器提示 -->
     <div v-if="!activeKey" class="empty-hint-box">
@@ -132,8 +134,8 @@
             {{ onlineFetch.loading.value ? '查询中…' : '刷新' }}
           </button>
         </div>
-        <AgentOfflineNotice v-if="!agentOnline" compact message="Agent 未连接，无法查询在线玩家。" />
-        <div v-else-if="onlineFetch.loading.value" class="loading-state">查询在线玩家…</div>
+        <template v-if="agentOnline">
+        <div v-if="onlineFetch.loading.value" class="loading-state">查询在线玩家…</div>
         <div v-else-if="!onlinePlayers.length" class="empty-row-inline">当前没有玩家在线</div>
         <div v-else class="player-pill-cloud">
           <div v-for="p in onlinePlayers" :key="p.name" class="player-pill">
@@ -145,6 +147,7 @@
             </button>
           </div>
         </div>
+        </template>
       </div>
 
       <!-- ④ 游戏内未绑定账号 -->
@@ -165,8 +168,8 @@
             {{ allGameFetch.loading.value ? '查询中…' : '刷新' }}
           </button>
         </div>
-        <AgentOfflineNotice v-if="!agentOnline" compact message="Agent 未连接，无法查询游戏账号。" />
-        <div v-else-if="allGameFetch.loading.value" class="loading-state">查询中…</div>
+        <template v-if="agentOnline">
+        <div v-if="allGameFetch.loading.value" class="loading-state">查询中…</div>
         <template v-else>
           <div v-if="!pagedUnbound.length" class="empty-row-inline">暂无未绑定的游戏账号</div>
           <div v-else class="player-pill-cloud">
@@ -185,6 +188,7 @@
             <span class="page-info">第 {{ unboundPage }} 页 / 共 {{ unboundTotalPages }} 页（{{ unboundTotal }} 条）</span>
             <button class="btn btn-xs btn-outline" :disabled="unboundPage >= unboundTotalPages" @click="unboundPage++">下一页</button>
           </div>
+        </template>
         </template>
       </div>
 
@@ -1903,5 +1907,13 @@ function formatTime(ts) {
 .pill-online-tag {
   font-size: .62rem; font-weight: 600; color: #15803d;
   background: #dcfce7; border-radius: 20px; padding: 1px 5px; white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .um-body { padding: 12px; }
+  .section-card { padding: 12px; }
+  .um-table { font-size: 12px; }
+  .um-table th, .um-table td { padding: 6px 8px; }
+  .section-header-row { flex-wrap: wrap; gap: 8px; }
 }
 </style>

@@ -399,4 +399,20 @@ watch(activeKey, () => {
   color: #dc2626; font-weight: 500;
 }
 .status-online svg, .status-offline svg { width: 13px; height: 13px; }
+
+@media (max-width: 768px) {
+  .console-main { padding: 10px; gap: 8px; }
+  .panel-header { padding: 6px 10px; font-size: 12px; flex-wrap: wrap; gap: 6px; }
+  .panel-header-right { gap: 4px; flex-wrap: wrap; }
+  .active-server-name { font-size: 11px; padding: 1px 6px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-box { padding: 8px 10px; font-size: 12px; }
+  .log-row { gap: 4px; flex-wrap: wrap; }
+  .log-tag { font-size: 10px; min-width: 34px; padding: 1px 4px; }
+  .log-content { font-size: 12px; }
+  .input-panel { padding: 10px; }
+  .input-row { gap: 6px; }
+  .input-group input { padding: 8px 10px; font-size: 13px; }
+  .send-btn { padding: 8px 14px; font-size: 13px; }
+  .input-hint { font-size: 11px; gap: 6px; }
+}
 </style>

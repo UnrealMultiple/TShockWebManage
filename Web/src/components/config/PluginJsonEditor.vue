@@ -247,7 +247,15 @@ function addArrItem(key) {
 
 function makeEmptyLike(v) {
   if (v === null || v === undefined) return ''
-  if (Array.isArray(v)) return []
+  if (Array.isArray(v)) {
+    // 非空数组保留一个空模板元素，使 UI 能推断子元素类型
+    if (v.length > 0) {
+      const first = v[0]
+      if (typeof first === 'object' && first !== null) return [makeEmptyLike(first)]
+      return [typeof first === 'number' ? 0 : typeof first === 'boolean' ? false : '']
+    }
+    return []
+  }
   if (typeof v === 'object') {
     const out = {}
     for (const [k, val] of Object.entries(v)) out[k] = makeEmptyLike(val)
@@ -508,4 +516,22 @@ function setJson(key, text) {
   background: #fafafa; resize: vertical; outline: none;
 }
 .pje-json-ta:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+
+@media (max-width: 768px) {
+  .pje-row { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
+  .pje-row:not(.pje-row-block) { flex-direction: column; align-items: flex-start; }
+  .pje-key {
+    min-width: 0; max-width: 100%;
+    font-size: 12px;
+  }
+  .pje-str-input { max-width: 100%; min-width: 0; width: 100%; box-sizing: border-box; }
+  .pje-num-input { width: 100%; max-width: 160px; box-sizing: border-box; }
+  .pje-arr-input { max-width: 100%; min-width: 0; flex: 1; }
+  .pje-nested-body { padding-left: 8px; margin-left: 2px; }
+  .pje-dict-head, .pje-dict-row { font-size: 11px; gap: 2px; }
+  .pje-dict-key-input { flex: 0 0 90px; }
+  .pje-dict-th-key { flex: 0 0 90px; }
+  .pje-dict-wrap { padding-left: 0; }
+  .pje-json-ta { max-width: 100%; }
+}
 </style>

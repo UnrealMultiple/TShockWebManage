@@ -28,7 +28,7 @@ namespace TerrariaManagerAgent.Services.Handlers
 
         private string GetApmConfigPath()
         {
-            return Path.Combine(GetServerDir(), "tshock", "AutoPluginManager.json");
+            return Path.Combine(TShock.SavePath, "AutoPluginManager.json");
         }
 
         private void EnsureBlacklistLoaded()
@@ -355,9 +355,7 @@ namespace TerrariaManagerAgent.Services.Handlers
 
         public async Task HandlePluginListConfigs(PacketEnvelope envelope)
         {
-            var serverDir  = GetServerDir();
-            var rawSave    = TShock.SavePath ?? "tshock";
-            var savePath   = Path.IsPathRooted(rawSave) ? rawSave : Path.Combine(serverDir, rawSave);
+            var savePath   = Path.GetFullPath(TShock.SavePath ?? "tshock");
             var pluginsDir = GetPluginsDir();
 
             var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase)

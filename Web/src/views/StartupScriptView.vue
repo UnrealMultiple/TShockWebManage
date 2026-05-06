@@ -30,13 +30,11 @@
       </template>
     </PageHeader>
 
-    <!-- 内容区（可滚动） -->
-    <div class="ss-content">
-
     <!-- 离线提示 -->
     <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法读取或保存脚本。请先启动服务器。" />
 
-    <template v-else>
+    <!-- 内容区（可滚动） -->
+    <div v-else class="ss-content">
       <div v-if="loading" class="ss-loading">
         <div class="ss-spinner"></div>
         <span>正在读取…</span>
@@ -220,6 +218,13 @@
                 <label class="ss-label">日志路径 <span class="ss-hint">-logpath，留空使用默认</span></label>
                 <input class="ss-input" v-model="params.logpath" placeholder="留空使用默认路径" @input="syncModified"/>
               </div>
+              <label class="ss-check" style="margin-top:10px">
+                <input type="checkbox" v-model="params.useInstaller" @change="syncModified"/>
+                <span>
+                  使用 TShock.Installer
+                  <small>勾选后使用 {{ scriptInfo.platform === 'windows' ? 'TShock.Installer.exe' : './TShock.Installer' }} 作为启动入口，适用于需要 Steam 验证 / 安装更新的服务器。</small>
+                </span>
+              </label>
             </div>
 
             <!-- 高级选项 -->
@@ -284,7 +289,6 @@
         <p>点击刷新读取服务器启动脚本</p>
         <button class="ss-btn ss-btn-primary" @click="loadScript" :disabled="!agentOnline">读取脚本</button>
       </div>
-    </template>
 
     </div><!-- /ss-content -->
   </div>
@@ -313,7 +317,8 @@ const mode        = ref('visual')  // 'visual' | 'raw'
 const toast       = ref(null)
 
 const scriptInfo = ref({
-  found: null, platform: '', filename: '', path: '', content: ''
+  found: null, pathExists: false, platform: '', filename: '', path: '', content: '',
+  executable: '', executableExists: false,
 })
 
 // 可视化参数
@@ -326,6 +331,7 @@ const params = ref({
   forceupdate: false, secure: false, ignoreversion: false,
   logclear: false, heaptile: false,
   autoRestart: true,
+  useInstaller: false,
 })
 
 // 原始编辑内容
@@ -336,7 +342,17 @@ const generatedScript = computed(() => buildScript(params.value, scriptInfo.valu
 
 function buildScript(p, platform) {
   const isWin = platform === 'windows'
-  const exe   = isWin ? 'TShock.Server.exe' : './TShock.Server'
+
+  // 根据 useInstaller 选择可执行文件
+  // 优先使用服务器上报的 executable，但 useInstaller 可覆盖
+  let exe
+  if (p.useInstaller) {
+    exe = isWin ? 'TShock.Installer.exe' : './TShock.Installer'
+  } else if (scriptInfo.value.executable) {
+    exe = scriptInfo.value.executable
+  } else {
+    exe = isWin ? 'TShock.Server.exe' : './TShock.Server'
+  }
 
   const args = []
   if (p.worldMode === 'direct' && p.world)       args.push(`-world "${p.world}"`)
@@ -370,7 +386,7 @@ function buildScript(p, platform) {
     }
   } else {
     if (p.autoRestart) {
-      return `#!/bin/bash\nwhile true; do\n    ${cmd}\n    echo "Server exited, restarting in 2s..."\n    sleep 2\ndone`
+      return `#!/bin/bash\nwhile true; do\n    ${cmd}\n    echo "Server exited, restarting in 2s..."\n    sleep 2\n    exec "$0" "$@"\ndone`
     } else {
       return `#!/bin/bash\n${cmd}`
     }
@@ -421,8 +437,10 @@ async function loadScript() {
     return
   }
   scriptInfo.value = {
-    found: resp.found, platform: resp.platform,
-    filename: resp.filename, path: resp.path, content: resp.content
+    found: resp.found, pathExists: Boolean(resp.path_exists),
+    platform: resp.platform,
+    filename: resp.filename, path: resp.path, content: resp.content,
+    executable: resp.executable || '', executableExists: Boolean(resp.executable_exists)
   }
   rawContent.value = resp.content
   parseScriptToParams(resp.content, resp.platform)
@@ -434,14 +452,16 @@ async function loadScript() {
 function parseScriptToParams(content, platform) {
   if (!content) return
   const isWin = (platform || '').toLowerCase() !== 'linux'
-  const exeRe = isWin ? /TShock\.Server\.exe\s+(.+)/i : /\.\/?TShock\.Server\s+(.+)/
+  const exeRe = isWin
+    ? /TShock\.(?:Installer|Server)\.exe(?:\s+(.*))?$/i
+    : /\.\/?TShock\.(?:Installer|Server)(?:\s+(.*))?$/
 
   let cmdLine = ''
+  let useInstaller = false
   for (const line of content.split(/\r?\n/)) {
     const m = line.trim().match(exeRe)
-    if (m) { cmdLine = m[1].trim(); break }
+    if (m) { cmdLine = (m[1] || '').trim(); useInstaller = m[0].includes('Installer'); break }
   }
-  if (!cmdLine) return
 
   // 解析参数（支持带引号的值）
   const tokens = []
@@ -455,6 +475,7 @@ function parseScriptToParams(content, platform) {
   const p = {
     ...params.value,
     autoRestart: hasAutoRestart,
+    useInstaller,
     worldMode: 'direct',
   }
 
@@ -511,6 +532,7 @@ async function saveScript() {
     scriptInfo.value.path     = resp.path
     scriptInfo.value.filename = resp.filename
     scriptInfo.value.found    = true
+    scriptInfo.value.pathExists = true
     scriptInfo.value.content  = content
     rawContent.value = content
     modified.value = false

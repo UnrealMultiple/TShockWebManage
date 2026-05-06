@@ -262,7 +262,7 @@
                 <template v-else>
                   <div class="inv-detail-icon-row">
                     <div class="inv-detail-icon">
-                      <img :src="`/items/${selectedSlot.net_id}.png`" class="detail-img"
+                      <img :src="itemImage(selectedSlot.net_id)" class="detail-img"
                         @error="e => e.target.style.display='none'" />
                     </div>
                     <div class="inv-detail-meta">
@@ -337,6 +337,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import ItemSlot from './ItemSlot.vue'
+import { itemImage } from '@/utils/assetPath.js'
 
 const props = defineProps({
   show:      { type: Boolean, default: false },
@@ -718,4 +719,21 @@ function emitSave() {
 .inv-detail-row    { display: flex; flex-direction: column; gap: 1px; }
 .drow-label { font-size: .68rem; color: #94a3b8; }
 .drow-val   { font-size: .82rem; color: #0f172a; font-weight: 500; }
+
+@media (max-width: 768px) {
+  .inv-panel {
+    width: 100vw;
+    max-width: 100vw;
+    border-radius: 16px 16px 0 0;
+    max-height: 90vh;
+    padding: 14px;
+  }
+  .inv-grid { grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 4px; }
+  .inv-tabs { overflow-x: auto; flex-wrap: nowrap; gap: 4px; }
+  .inv-tab { flex-shrink: 0; font-size: 12px; padding: 5px 10px; }
+  .inv-header { flex-wrap: wrap; gap: 8px; }
+  .inv-stat-edit-row { flex-wrap: wrap; gap: 6px; }
+  .inv-buff-grid { grid-template-columns: 1fr 1fr; }
+  .inv-detail-rows { grid-template-columns: 1fr; }
+}
 </style>

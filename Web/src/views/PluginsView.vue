@@ -2231,4 +2231,101 @@ watch([activeServerKey, () => props.agentOnline], ([key, online]) => {
 }
 .plg-btn-danger-sm:hover:not(:disabled) { background: #fee2e2; }
 .plg-btn-danger-sm:disabled { opacity: .5; cursor: not-allowed; }
+
+@media (max-width: 768px) {
+  /* ── Tab 栏横向滚动 ── */
+  .plg-tabs { overflow-x: auto; gap: 4px; padding: 0 0 4px; }
+  .plg-tab { flex-shrink: 0; font-size: 12px; padding: 6px 12px; }
+
+  .plg-panel { padding: 8px; }
+
+  /* ── 配置 Tab：两栏变单栏，侧边栏变顶部横向 ── */
+  .plg-cfg-layout { flex-direction: column; }
+  .plg-cfg-sidebar {
+    width: 100%; min-width: 0; max-width: none;
+    border-right: none; border-bottom: 1px solid #e2e8f0;
+    max-height: 180px; flex-shrink: 0;
+  }
+  .plg-cfg-search { padding: 8px 10px; }
+  .plg-cfg-item { padding: 8px 10px; }
+  .plg-cfg-item-name { font-size: 12px; }
+
+  /* ── 编辑区：整块可滚动，三面板可见 ── */
+  .plg-cfg-main { overflow-y: auto; overflow-x: hidden; }
+
+  /* 编辑区头部：竖向排列 */
+  .plg-cfg-editor-header {
+    flex-direction: column; align-items: flex-start;
+    gap: 8px; padding: 10px 12px;
+  }
+  .plg-cfg-editor-title { flex-wrap: wrap; gap: 6px; }
+  .plg-cfg-file-name { font-size: 13px; }
+  .plg-cfg-editor-actions {
+    flex-wrap: wrap; gap: 6px; width: 100%;
+  }
+  .plg-mode-btn { padding: 3px 8px; font-size: 11px; }
+
+  /* 内容行：编辑器 + 文档 → 上下堆叠，不裁剪 */
+  .plg-content-row {
+    flex: none;
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  /* 编辑器区域：固定最小高度 */
+  .plg-editor-wrap {
+    flex: none;
+    min-height: 320px;
+    overflow: visible;
+  }
+
+  /* 文档面板：宽度自适应，放编辑器下方，始终可见 */
+  .plg-doc-panel {
+    width: 100%; min-width: 0; max-width: none;
+    border-left: none; border-top: 1px solid #e2e8f0;
+    min-height: 200px; max-height: none;
+    flex-shrink: 0;
+  }
+  .plg-doc-content { font-size: 12px; padding: 10px 12px; }
+
+  /* JSON 编辑器缩小 */
+  .plg-json-editor { margin: 8px 8px 0; min-height: 260px; }
+  .plg-json-gutter { width: 36px; font-size: 10px; }
+  .plg-json-gutter span { height: 19px; padding: 0 6px 0 2px; }
+  .plg-json-highlight, .plg-json-input {
+    padding: 12px 12px 12px 50px;
+    font-size: 12px; line-height: 1.55;
+  }
+  .plg-ui-editor { padding: 4px 0; }
+
+  /* ── 已安装 Tab ── */
+  .plg-local-toolbar {
+    flex-wrap: wrap; gap: 8px; padding: 10px 12px;
+  }
+  .plg-install-search-wrap { max-width: none; }
+  .plg-local-item { flex-direction: column; gap: 10px; padding: 12px; }
+  .plg-local-item-name { font-size: 13px; gap: 6px; }
+  .plg-local-badge { font-size: 9px; padding: 1px 5px; }
+  .plg-local-item-meta { font-size: 11px; }
+  .plg-local-actions { width: 100%; justify-content: flex-start; }
+  .plg-action-btn { padding: 5px 8px; font-size: 10px; min-height: 0; min-width: 0; }
+  .plg-btn-danger-sm { padding: 5px 8px; font-size: 10px; min-height: 0; min-width: 0; }
+
+  /* ── 安装 Tab ── */
+  .plg-install-bar { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+  .plg-cloud-item { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .plg-cloud-item-action { display: flex; gap: 6px; }
+  .plg-cloud-name { font-size: 13px; }
+
+  /* ── 文档弹窗 ── */
+  .plg-modal-box {
+    width: 100vw; max-width: 100vw; height: 90vh;
+    border-radius: 16px 16px 0 0;
+  }
+  .plg-modal-header { padding: 10px 12px; }
+
+  /* ── 全局结果提示 ── */
+  .plg-local-result { margin: 8px 8px 0; font-size: 12px; }
+  .plg-toast { margin: 8px; font-size: 12px; }
+}
 </style>

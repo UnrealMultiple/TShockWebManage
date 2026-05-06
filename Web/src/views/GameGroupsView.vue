@@ -27,12 +27,12 @@
       </template>
     </PageHeader>
 
-    <div class="gg-body">
-      <!-- Agent 离线 -->
-      <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理权限组。请先启动服务器。" />
+    <!-- Agent 离线 -->
+    <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理权限组。请先启动服务器。" />
 
+    <div v-else class="gg-body">
       <!-- 无服务器 -->
-      <div v-else-if="!activeServerKey" class="state-box state-empty">
+      <div v-if="!activeServerKey" class="state-box state-empty">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
         </svg>

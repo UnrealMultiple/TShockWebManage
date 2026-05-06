@@ -9,7 +9,9 @@
       </template>
     </PageHeader>
 
-    <div v-if="!activeKey" class="hint-box">
+    <AgentOfflineNotice v-if="activeKey && !agentOnline" />
+
+    <div v-else-if="!activeKey" class="hint-box">
       <div class="hint-icon">🎮</div>
       <p>请先在左侧选择一个服务器</p>
     </div>
@@ -25,8 +27,6 @@
         <div class="reg-notice">
           注册后可使用此用户名和密码在游戏内登录服务器（SSC 模式）
         </div>
-
-        <AgentOfflineNotice v-if="!agentOnline" compact message="Agent 未连接，无法完成注册。" />
 
         <div class="reg-form" :class="{ disabled: !agentOnline }">
           <div class="field-row">
@@ -72,9 +72,7 @@
           游戏内已有角色但未与面板绑定？填写角色名，系统将向该角色发送验证码（必须该角色本人在线且已登录）
         </div>
 
-        <AgentOfflineNotice v-if="!agentOnline" compact message="Agent 未连接，无法发送验证码。" />
-
-        <template v-else>
+        <template v-if="agentOnline">
           <!-- Step 1：输入用户名 -->
           <div v-if="!bindCodeSent" class="reg-form">
             <div class="field-row">
@@ -985,5 +983,11 @@ function formatTime(ts) {
   display: flex;
   gap: 10px;
   align-items: center;
+}
+
+@media (max-width: 768px) {
+  .mc-body { padding: 12px; }
+  .mc-table { font-size: 12px; }
+  .mc-table th, .mc-table td { padding: 6px 8px; }
 }
 </style>

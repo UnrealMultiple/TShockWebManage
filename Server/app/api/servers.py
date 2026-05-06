@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import re
 import secrets
 import sqlite3
@@ -45,16 +44,6 @@ router = APIRouter(prefix="/api/servers", tags=["Servers"])
 DEFAULT_CHARACTER_NAME_REGEX = r"^[\u4e00-\u9fffA-Za-z0-9:/\[\]]+$"
 DEFAULT_CHARACTER_NAME_MAX_LENGTH = 20
 BLOCKED_CHARACTER_NAME_CATEGORIES = {"Cc", "Cf", "Zs", "Zl", "Zp"}
-
-
-def _expose_local_start_path(path: str) -> str:
-    """Only expose runnable local startup scripts on this backend host."""
-    p = (path or "").strip()
-    if not p:
-        return ""
-    if not (p.endswith(".bat") or p.endswith(".sh")):
-        return ""
-    return p if os.path.isfile(p) else ""
 
 
 def _normalize_server_code(v: str) -> str:
@@ -678,8 +667,6 @@ def _server_to_out(s: Server, db: Session, user_id: Optional[int] = None) -> Ser
         platform_audit_status=getattr(s, "platform_audit_status", "pending") or "pending",
         platform_audit_reason=getattr(s, "platform_audit_reason", None),
         platform_is_public=bool(getattr(s, "platform_is_public", False)),
-        local_start_enabled=bool(s.local_start_enabled) if s.local_start_enabled is not None else False,
-        local_start_path=_expose_local_start_path(s.local_start_path or ""),
     )
 
 
@@ -1757,14 +1744,6 @@ def update_server(
         server.game_version = req.game_version
     if req.show_ip is not None:
         server.show_ip = req.show_ip
-    if req.local_start_enabled is not None:
-        server.local_start_enabled = req.local_start_enabled
-    if req.local_start_path is not None:
-        # 校验路径扩展名，只允许 .bat / .sh
-        path = req.local_start_path.strip()
-        if path and not (path.endswith(".bat") or path.endswith(".sh")):
-            raise HTTPException(400, "local_start_path 只允许 .bat 或 .sh 脚本")
-        server.local_start_path = path
     try:
         db.commit()
         db.refresh(server)
@@ -1794,8 +1773,6 @@ def update_server(
         platform_audit_status=getattr(server, "platform_audit_status", "pending") or "pending",
         platform_audit_reason=getattr(server, "platform_audit_reason", None),
         platform_is_public=bool(getattr(server, "platform_is_public", False)),
-        local_start_enabled=bool(server.local_start_enabled) if server.local_start_enabled is not None else False,
-        local_start_path=_expose_local_start_path(server.local_start_path or ""),
     )
 
 

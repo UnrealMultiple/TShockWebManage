@@ -13,10 +13,10 @@
       </template>
     </PageHeader>
 
-    <div class="bans-body">
-      <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理封禁。请先启动服务器。" />
+    <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理封禁。请先启动服务器。" />
 
-      <div v-else-if="!activeServerKey" class="state-box state-empty">
+    <div v-else class="bans-body">
+      <div v-if="!activeServerKey" class="state-box state-empty">
         <p>请先在左侧选择一个服务器</p>
       </div>
 

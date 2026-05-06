@@ -3,7 +3,7 @@ using Newtonsoft.Json;
 namespace TerrariaManagerAgent.Models
 {
     /// <summary>
-    /// Agent 配置文件模型，对应 tshock/agent_config.json
+    /// Agent 配置文件模型，对应 tshock/TerrariaManagerAgent.json
     /// </summary>
     public class AgentConfig
     {

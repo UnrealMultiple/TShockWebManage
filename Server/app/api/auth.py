@@ -1,6 +1,7 @@
 import sqlite3
 import secrets
 import time
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from app.core.config import AUTH_DB_PATH, BOOTSTRAP_TOKEN
 from app.core.schema import init_auth_db
@@ -13,65 +14,45 @@ from app.services.mail_service import send_email_code
 router = APIRouter(prefix="/api/auth")
 
 _pending = {}
-# 验证码发送限流状态：key -> {timestamps: [ts...], lock_until: ts}
-_code_send_guard = {}
 
-# 单次发送冷却：同一邮箱至少间隔 60 秒
-CODE_SEND_CD_SECONDS = 60
-# 窗口限次：10 分钟内最多 5 次
-CODE_SEND_WINDOW_SECONDS = 10 * 60
-CODE_SEND_MAX_IN_WINDOW = 5
-# 连续高频保护：2 分钟内达到 3 次触发风控锁定
-CODE_SEND_BURST_WINDOW_SECONDS = 2 * 60
-CODE_SEND_BURST_MAX = 3
-CODE_SEND_RISK_LOCK_SECONDS = 10 * 60
+# ── 验证码发送频率限制 ─────────────────────────────────────────────
+# 两层独立限流（asyncio.Lock 防并发绕过，单进程 uvicorn 下安全）：
+#   1. 邮箱维度：同邮箱 60 秒内只能请求 1 次
+#   2. IP 维度：同 IP 每分钟最多 5 次
 
+_guard_lock = asyncio.Lock()
+_guard_email = {}   # email_key -> last_send_ts
+_guard_ip = {}      # ip_key -> [ts...]
 
-def _guard_key(email: str, scene: str, client_ip: str) -> str:
-    # 同邮箱 + 场景 + IP 独立限流，避免互相影响
-    return f"{scene}:{email.lower()}:{client_ip}"
+CODE_SEND_EMAIL_CD = 60          # 邮箱冷却（秒）
+CODE_SEND_IP_WINDOW = 60         # IP 窗口（秒）
+CODE_SEND_IP_MAX = 5             # IP 窗口内最大次数
 
 
-def _check_send_guard(email: str, scene: str, client_ip: str):
+async def _acquire_send_guard(email: str, client_ip: str):
+    """原子检查+记录（asyncio.Lock 保证单进程内串行）"""
     now = time.time()
-    key = _guard_key(email, scene, client_ip)
-    state = _code_send_guard.get(key) or {"timestamps": [], "lock_until": 0}
+    email_key = f"email:{normalize_qq_email(email).lower()}"
+    ip_key = f"ip:{client_ip}"
 
-    if now < state.get("lock_until", 0):
-        remain = int(state["lock_until"] - now)
-        raise HTTPException(429, f"发送过于频繁，已触发风控，请 {remain} 秒后重试")
-
-    # 清理窗口外记录
-    recent = [ts for ts in state.get("timestamps", []) if now - ts <= CODE_SEND_WINDOW_SECONDS]
-    state["timestamps"] = recent
-
-    if recent:
-        since_last = now - recent[-1]
-        if since_last < CODE_SEND_CD_SECONDS:
-            remain = int(CODE_SEND_CD_SECONDS - since_last)
+    async with _guard_lock:
+        # 1. 邮箱冷却检查
+        last = _guard_email.get(email_key, 0)
+        if now - last < CODE_SEND_EMAIL_CD:
+            remain = int(CODE_SEND_EMAIL_CD - (now - last))
             raise HTTPException(429, f"请求过快，请 {remain} 秒后再发送验证码")
 
-    burst = [ts for ts in recent if now - ts <= CODE_SEND_BURST_WINDOW_SECONDS]
-    if len(burst) >= CODE_SEND_BURST_MAX:
-        state["lock_until"] = now + CODE_SEND_RISK_LOCK_SECONDS
-        _code_send_guard[key] = state
-        raise HTTPException(429, f"单位时间内连续发送次数过多，请 {CODE_SEND_RISK_LOCK_SECONDS} 秒后重试")
+        # 2. IP 频率检查
+        timestamps = _guard_ip.get(ip_key, [])
+        recent = [ts for ts in timestamps if now - ts <= CODE_SEND_IP_WINDOW]
+        if len(recent) >= CODE_SEND_IP_MAX:
+            remain = int(CODE_SEND_IP_WINDOW - (now - recent[0]))
+            raise HTTPException(429, f"请求过于频繁，请 {remain} 秒后再试")
 
-    if len(recent) >= CODE_SEND_MAX_IN_WINDOW:
-        remain = int(CODE_SEND_WINDOW_SECONDS - (now - recent[0]))
-        raise HTTPException(429, f"发送次数已达上限，请 {remain} 秒后重试")
-
-    _code_send_guard[key] = state
-
-
-def _record_send_guard(email: str, scene: str, client_ip: str):
-    now = time.time()
-    key = _guard_key(email, scene, client_ip)
-    state = _code_send_guard.get(key) or {"timestamps": [], "lock_until": 0}
-    recent = [ts for ts in state.get("timestamps", []) if now - ts <= CODE_SEND_WINDOW_SECONDS]
-    recent.append(now)
-    state["timestamps"] = recent
-    _code_send_guard[key] = state
+        # 3. 记录
+        _guard_email[email_key] = now
+        recent.append(now)
+        _guard_ip[ip_key] = recent
 
 
 def _has_platform_admin(conn: sqlite3.Connection) -> bool:
@@ -103,7 +84,7 @@ async def api_send_code(req: SendCodeReq, request: Request):
     email = normalize_qq_email(req.email)
 
     client_ip = request.client.host if request.client else "unknown"
-    _check_send_guard(email, "register", client_ip)
+    await _acquire_send_guard(email, client_ip)
     
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         if conn.execute("SELECT 1 FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone():
@@ -125,7 +106,6 @@ async def api_send_code(req: SendCodeReq, request: Request):
     except Exception as e:
         raise HTTPException(500, f"邮件发送失败：{e}")
 
-    _record_send_guard(email, "register", client_ip)
     return {"ok": True}
 
 @router.post("/register")
@@ -198,7 +178,7 @@ async def api_bootstrap_send_code(req: SendCodeReq, request: Request, bootstrap_
 
     _check_bootstrap_token(bootstrap_token)
     client_ip = request.client.host if request.client else "unknown"
-    _check_send_guard(email, "bootstrap", client_ip)
+    await _acquire_send_guard(email, client_ip)
 
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         _ensure_bootstrap_open(conn)
@@ -221,8 +201,7 @@ async def api_bootstrap_send_code(req: SendCodeReq, request: Request, bootstrap_
     except Exception as e:
         raise HTTPException(500, f"邮件发送失败：{e}")
 
-    _record_send_guard(email, "bootstrap", client_ip)
-    return {"ok": True}
+    return {"ok": True}  # bootstrap
 
 
 @router.post("/bootstrap-register")
@@ -295,12 +274,11 @@ async def api_bootstrap_platform_admin(
 async def api_reset_send_code(req: ResetSendCodeReq, request: Request):
     key = normalize_qq_email(req.email)
     client_ip = request.client.host if request.client else "unknown"
-    _check_send_guard(key, "reset", client_ip)
+    await _acquire_send_guard(key, client_ip)
     
     with sqlite3.connect(AUTH_DB_PATH) as conn:
         if not conn.execute("SELECT 1 FROM users WHERE email=? COLLATE NOCASE", (key,)).fetchone():
             # 不暴露账号是否存在，统一返回成功，防止账号枚举
-            _record_send_guard(key, "reset", client_ip)
             return {"ok": True}
     
     code = str(secrets.randbelow(900000) + 100000)
@@ -314,8 +292,7 @@ async def api_reset_send_code(req: ResetSendCodeReq, request: Request):
     except Exception as e:
         raise HTTPException(500, f"邮件发送失败：{e}")
 
-    _record_send_guard(key, "reset", client_ip)
-    return {"ok": True}
+    return {"ok": True}  # reset
 
 # ── 忘记密码：验证码校验 + 重置密码 ────────────────────────────
 @router.post("/reset-confirm")

@@ -3,6 +3,16 @@ import sqlite3
 from app.core.config import AUTH_DB_PATH
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(str(row[1]).lower() == column.lower() for row in rows)
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    if not _column_exists(conn, table, column):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_auth_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS Users (
@@ -14,6 +24,8 @@ def init_auth_schema(conn: sqlite3.Connection) -> None:
             created_at INTEGER NOT NULL
         )
     """)
+    _ensure_column(conn, "Users", "access_group_id", "INTEGER")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS AccountAccessGroups (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,11 +50,9 @@ def init_auth_schema(conn: sqlite3.Connection) -> None:
     """)
 
     cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM AccountAccessGroups WHERE name='superadmin'")
-    if not cursor.fetchone():
-        cursor.execute("INSERT INTO AccountAccessGroups(name, description, permissions, is_builtin) VALUES('superadmin', '超级管理员，拥有所有权限', '[\"*\"]', 1)")
-        cursor.execute("INSERT INTO AccountAccessGroups(name, description, permissions, is_builtin) VALUES('admin', '管理员', '[\"rbac.manage\"]', 1)")
-        cursor.execute("INSERT INTO AccountAccessGroups(name, description, permissions, is_builtin) VALUES('default', '普通用户', '[]', 1)")
+    cursor.execute("INSERT OR IGNORE INTO AccountAccessGroups(name, description, permissions, is_builtin) VALUES('superadmin', '超级管理员，拥有所有权限', '[\"*\"]', 1)")
+    cursor.execute("INSERT OR IGNORE INTO AccountAccessGroups(name, description, permissions, is_builtin) VALUES('admin', '管理员', '[\"rbac.manage\"]', 1)")
+    cursor.execute("INSERT OR IGNORE INTO AccountAccessGroups(name, description, permissions, is_builtin) VALUES('default', '普通用户', '[]', 1)")
 
 
 def init_auth_db() -> None:

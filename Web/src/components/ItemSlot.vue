@@ -1,5 +1,5 @@
 <template>
-  <img v-if="item.net_id" :src="`/items/${item.net_id}.png`"
+  <img v-if="item.net_id" :src="itemImage(item.net_id)"
        class="slot-img"
        :title="item.name || ('#' + item.net_id)"
        @error="e => e.target.style.display='none'" />
@@ -8,6 +8,8 @@
 </template>
 
 <script setup>
+import { itemImage } from '@/utils/assetPath.js'
+
 defineProps({ item: { type: Object, required: true } })
 </script>
 

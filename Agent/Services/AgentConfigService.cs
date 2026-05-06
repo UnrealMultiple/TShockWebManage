@@ -11,9 +11,14 @@ namespace TerrariaManagerAgent.Services
     /// </summary>
     public static class AgentConfigService
     {
+        private const string ConfigName = "TerrariaManagerAgent.json";
+
         public static AgentConfig LoadConfig(string savePath)
         {
-            var path = Path.Combine(savePath, "TerrariaManagerAgent.json");
+            var configDir = ResolveSavePath(savePath);
+            Directory.CreateDirectory(configDir);
+
+            var path = Path.Combine(configDir, ConfigName);
             AgentConfig config;
             bool changed = false;
 
@@ -34,6 +39,7 @@ namespace TerrariaManagerAgent.Services
                         ("path", path),
                         ("error", ex.Message));
                     config = new AgentConfig();
+                    changed = true;
                 }
             }
 
@@ -61,6 +67,7 @@ namespace TerrariaManagerAgent.Services
             }
 
             AgentLog.Console("Config", "loaded",
+                ("path", path),
                 ("backend_url", config.BackendUrl),
                 ("agent_key", config.AgentKey),
                 ("audit_level", config.AuditLevel),
@@ -68,5 +75,12 @@ namespace TerrariaManagerAgent.Services
 
             return config;
         }
+
+        private static string ResolveSavePath(string savePath)
+        {
+            var raw = string.IsNullOrWhiteSpace(savePath) ? "tshock" : savePath;
+            return Path.GetFullPath(raw);
+        }
+
     }
 }

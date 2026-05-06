@@ -60,10 +60,6 @@ class Server(Base):
     platform_audit_at = Column(Integer, nullable=True, default=None)  # 审核时间戳
     platform_is_public = Column(Boolean, nullable=False, default=False)  # 平台是否公开展示
 
-    # 同机直接启动配置（后端与 TShock 在同一台机器时使用）
-    local_start_enabled = Column(Boolean, nullable=False, default=False)
-    local_start_path    = Column(String(512), nullable=False, default="")
-
     # ORM 关系
     members = relationship(
         "ServerMember",

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using TShockAPI;
+using System.Reflection;
 
 namespace TerrariaManagerAgent.Services
 {
@@ -15,8 +15,7 @@ namespace TerrariaManagerAgent.Services
         {
             try
             {
-                var serverDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule?.FileName)
-                                ?? Directory.GetCurrentDirectory();
+                var serverDir = GetServerDir();
                 var flagPath = Path.Combine(serverDir, "restart_pending.flag");
                 if (!File.Exists(flagPath)) return;
 
@@ -100,7 +99,7 @@ namespace TerrariaManagerAgent.Services
                 if (t == "done") { inLoop = false; continue; }
                 if (inLoop)
                 {
-                    if (t.StartsWith("./TShock.Server") || t.StartsWith("TShock.Server"))
+                    if (IsLinuxStartupCommand(t))
                         result.Add(t);
                     continue;
                 }
@@ -111,6 +110,47 @@ namespace TerrariaManagerAgent.Services
                 result.RemoveAt(result.Count - 1);
 
             return string.Join("\n", result);
+        }
+
+        private static bool IsLinuxStartupCommand(string line)
+        {
+            foreach (var candidate in new[] { "TShock.Installer", "TShock.Server" })
+            {
+                var relativeCandidate = "./" + candidate;
+                if (line.Equals(relativeCandidate, StringComparison.OrdinalIgnoreCase)
+                    || line.StartsWith(relativeCandidate + " ", StringComparison.OrdinalIgnoreCase)
+                    || line.Equals(candidate, StringComparison.OrdinalIgnoreCase)
+                    || line.StartsWith(candidate + " ", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static string GetServerDir()
+        {
+            try
+            {
+                var pluginDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                if (!string.IsNullOrEmpty(pluginDir))
+                {
+                    var dir = new DirectoryInfo(pluginDir);
+                    if (string.Equals(dir.Name, "ServerPlugins", StringComparison.OrdinalIgnoreCase)
+                        && dir.Parent != null)
+                    {
+                        return dir.Parent.FullName;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                return Path.GetDirectoryName(Process.GetCurrentProcess().MainModule?.FileName)
+                    ?? Directory.GetCurrentDirectory();
+            }
+            catch { return Directory.GetCurrentDirectory(); }
         }
     }
 }

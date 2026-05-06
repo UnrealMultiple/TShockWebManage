@@ -85,7 +85,7 @@ API_HOST       = _cfg.get("接口", {}).get("主机", "127.0.0.1")
 API_PORT       = int(_cfg.get("接口", {}).get("端口", 8000))
 
 # 安全配置
-JWT_SECRET     = _cfg.get("JWT 密钥", "dev-secret-please-change")
+JWT_SECRET     = _cfg.get("JWT 密钥", "dev-secret")
 JWT_HOURS      = 24
 
 # 初始平台管理员配置（保留兼容，已不再作为主流程）

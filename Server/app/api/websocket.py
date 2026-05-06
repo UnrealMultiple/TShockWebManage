@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import random
 import re
 import secrets
@@ -918,12 +917,6 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                                    "payload": {"agent_key": agent_key, "online": True}})
         await broadcast_agent_to_members(agent_key, online_notif)
 
-        # 主动向 Agent 请求启动脚本路径，成功后自动写入 DB
-        await websocket.send_text(json.dumps({
-            "type": "read_startup_script", "msg_id": "__auto_probe__", "timestamp": now_ms(),
-            "payload": {}
-        }))
-
         while True:
             raw = await websocket.receive_text()
             try:
@@ -980,39 +973,7 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                 await broadcast_agent_to_members(agent_key, raw)
 
             elif packet.get("type") == "read_startup_script_resp":
-                # 拦截启动脚本读取响应：仅当路径在后端主机可用时才自动回写 local_start_path
-                p = packet.get("payload", {})
-                if p.get("success") and p.get("path"):
-                    try:
-                        with sqlite3.connect(AUTH_DB_PATH) as _conn:
-                            probed_path = str(p.get("path") or "").strip()
-                            current_row = _conn.execute(
-                                "SELECT local_start_path FROM servers WHERE agent_key=?",
-                                (agent_key,),
-                            ).fetchone()
-                            current_path = (current_row[0] if current_row and current_row[0] else "").strip()
-
-                            if probed_path and os.path.isfile(probed_path):
-                                _conn.execute(
-                                    "UPDATE servers SET local_start_path=? WHERE agent_key=?",
-                                    (probed_path, agent_key),
-                                )
-                            else:
-                                # Agent 回报的是其主机路径，若后端不可访问则避免污染同机启动路径
-                                if not current_path or current_path == probed_path:
-                                    _conn.execute(
-                                        "UPDATE servers SET local_start_path='' WHERE agent_key=?",
-                                        (agent_key,),
-                                    )
-                                    print(f"[DB] 已清理不可用 local_start_path: {probed_path}")
-                                else:
-                                    print(f"[DB] 忽略不可用 local_start_path: {probed_path}")
-                            _conn.commit()
-                    except Exception as _db_err:
-                        print(f"[DB] 更新 local_start_path 失败: {_db_err}")
-                # 仅当 ref_id 不是内部探针时才转发到前端
-                if p.get("ref_id") != "__auto_probe__":
-                    await broadcast_agent_to_authorized_webs(agent_key, raw)
+                await broadcast_agent_to_authorized_webs(agent_key, raw)
 
             elif packet.get("type") in ("log", "cmd_resp", "chat",
                                        "file_list_resp", "server_ctrl_resp",

@@ -1966,5 +1966,14 @@ watch(activeTab, (tab) => {
   .info-connect-row {
     grid-template-columns: 1fr;
   }
+
+  .modal,
+  .modal-wide,
+  .modal-detail,
+  .modal-info {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 16px 16px 0 0;
+  }
 }
 </style>

@@ -293,11 +293,14 @@
         </nav>
       </aside>
 
+      <!-- 移动端侧边栏遮罩 -->
+      <div v-if="isMobile && sidebarOpen" class="sidebar-overlay" @click="sidebarOpen = false"></div>
+
       <!-- 内容区 -->
       <main class="main-content">
         <router-view v-slot="{ Component }">
           <transition name="page-fade" mode="out-in">
-            <component :is="Component" :key="route.fullPath" v-bind="{ wsState, agentOnline }" />
+            <component :is="Component" :key="route.fullPath + activeServerKey" v-bind="{ wsState, agentOnline }" />
           </transition>
         </router-view>
       </main>
@@ -317,7 +320,12 @@ const route = useRoute()
 const email  = getEmail() || ''
 const token  = getToken() || ''
 
-const sidebarOpen     = ref(true)
+const isMobile = ref(window.innerWidth < 768)
+function onResize() { isMobile.value = window.innerWidth < 768 }
+window.addEventListener('resize', onResize)
+onUnmounted(() => window.removeEventListener('resize', onResize))
+
+const sidebarOpen     = ref(!isMobile.value)
 const tshockGroupOpen = ref(false)
 const platformGroupOpen = ref(false)
 const wsState         = ref('disconnected')
@@ -641,6 +649,16 @@ watch(
   },
   { immediate: true }
 )
+
+// 移动端路由切换后自动关闭侧边栏
+watch(() => route.fullPath, () => {
+  if (isMobile.value) sidebarOpen.value = false
+})
+
+// 窗口大小变化时，桌面端自动展开、移动端自动收起
+watch(isMobile, (v) => {
+  sidebarOpen.value = !v
+})
 </script>
 
 <style scoped>
@@ -910,4 +928,67 @@ watch(
 }
 .page-fade-enter-from { opacity: 0; transform: translateY(6px); }
 .page-fade-leave-to   { opacity: 0; transform: translateY(-4px); }
+
+/* ── 移动端适配 ── */
+@media (max-width: 768px) {
+  .topbar {
+    padding: 0 12px;
+    height: 48px;
+  }
+  .topbar-left { gap: 6px; }
+  .site-title { font-size: 13px; }
+  .status-text { display: none; }
+  .user-email {
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  .logout-btn { padding: 4px 10px; font-size: 12px; }
+
+  .sidebar {
+    position: fixed;
+    top: 48px;
+    left: 0;
+    bottom: 0;
+    z-index: 200;
+    width: 260px;
+    transform: translateX(-100%);
+    transition: transform .25s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,.15);
+  }
+  .sidebar:not(.collapsed) {
+    transform: translateX(0);
+  }
+  .sidebar.collapsed {
+    transform: translateX(-100%);
+    width: 260px;
+  }
+
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    top: 48px;
+    z-index: 199;
+    background: rgba(15, 23, 42, .4);
+    transition: opacity .25s ease;
+  }
+
+  .nav-item {
+    padding: 10px 12px;
+    font-size: 14px;
+    border-radius: 8px;
+  }
+  .nav-item-sub {
+    padding-left: 30px !important;
+  }
+  .nav-group-header {
+    padding: 10px 12px;
+  }
+
+  .main-content {
+    width: 100%;
+  }
+}
 </style>

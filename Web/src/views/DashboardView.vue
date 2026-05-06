@@ -211,8 +211,11 @@
             @mousemove="onMapMouseMove"
             @mouseup="onMapMouseUp"
             @mouseleave="onMapMouseUp"
+            @touchstart.prevent="onMapTouchStart"
+            @touchmove="onMapTouchMove"
+            @touchend="onMapTouchEnd"
             @click="onViewportClick"
-            :style="{ cursor: mapDragging ? 'grabbing' : (dashMapImg ? 'grab' : 'default') }">
+            :style="{ cursor: mapDragging ? 'grabbing' : (dashMapImg ? 'grab' : 'default'), touchAction: 'none' }">
             <canvas ref="minimapCanvas" class="minimap-canvas"
               :style="{ transformOrigin: '0 0', transform: `translate(${mapPanX}px, ${mapPanY}px) scale(${mapZoom})` }">
             </canvas>
@@ -841,6 +844,39 @@ function onMapMouseMove(e) {
   mapPanY.value = _panStartY + (e.clientY - _dragStartY)
 }
 function onMapMouseUp() { mapDragging.value = false }
+function onMapTouchStart(e) {
+  if (e.touches.length === 2) {
+    // 双指缩放：记录初始距离
+    _dragStartX = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY)
+  } else if (e.touches.length === 1) {
+    mapDragging.value = true
+    _dragStartX = e.touches[0].clientX
+    _dragStartY = e.touches[0].clientY
+    _panStartX = mapPanX.value
+    _panStartY = mapPanY.value
+  }
+}
+function onMapTouchMove(e) {
+  if (e.touches.length === 2) {
+    const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY)
+    if (_dragStartX > 0) {
+      const factor = d / _dragStartX
+      const newZoom = Math.max(0.1, Math.min(10, mapZoom.value * factor))
+      const rect = minimapViewport.value.getBoundingClientRect()
+      const cx = ((e.touches[0].clientX + e.touches[1].clientX) / 2) - rect.left
+      const cy = ((e.touches[0].clientY + e.touches[1].clientY) / 2) - rect.top
+      const scale = newZoom / mapZoom.value
+      mapPanX.value = cx - (cx - mapPanX.value) * scale
+      mapPanY.value = cy - (cy - mapPanY.value) * scale
+      mapZoom.value = newZoom
+      _dragStartX = d
+    }
+  } else if (e.touches.length === 1 && mapDragging.value) {
+    mapPanX.value = _panStartX + (e.touches[0].clientX - _dragStartX)
+    mapPanY.value = _panStartY + (e.touches[0].clientY - _dragStartY)
+  }
+}
+function onMapTouchEnd() { mapDragging.value = false; _dragStartX = 0 }
 function onViewportClick(e) {
   if (Math.abs(e.clientX - _dragStartX) > 5 || Math.abs(e.clientY - _dragStartY) > 5) return
   if (!dashMapEl.value) return

@@ -439,4 +439,15 @@ function onJsonInput(text) {
 .fc-type-json .fc-info {
   margin-bottom: 8px;
 }
+
+@media (max-width: 768px) {
+  .fc-row { flex-direction: column; gap: 8px; padding: 10px 12px; }
+  .fc-ctrl { min-width: 0; max-width: none; width: 100%; }
+  .fc-input-str { width: 100%; box-sizing: border-box; }
+  .fc-input-num { width: 100%; max-width: 160px; box-sizing: border-box; }
+  .fc-select { max-width: 100%; }
+  .fc-dict-head, .fc-dict-row { grid-template-columns: 1.5fr 1fr 1fr 28px; gap: 3px; font-size: 10px; }
+  .fc-ilist-head, .fc-ilist-row { grid-template-columns: 1fr 1fr 1fr 28px; gap: 3px; font-size: 10px; }
+  .fc-json-area { min-width: 0; width: 100%; box-sizing: border-box; }
+}
 </style>

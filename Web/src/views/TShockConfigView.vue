@@ -1043,4 +1043,24 @@ watch(() => props.agentOnline, (online) => {
   font-weight: 700;
   line-height: 1;
 }
+
+@media (max-width: 768px) {
+  .cfg-page { padding: 0; }
+  .cfg-editor { padding: 12px; }
+  .cfg-mode-bar { flex-wrap: wrap; gap: 8px; }
+  .cfg-cats {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+  }
+  .cfg-cat-btn {
+    flex-shrink: 0;
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+  .cfg-field-row { padding: 8px 0; }
+  .cfg-json-panel { padding: 0; }
+  .cfg-json-editor { font-size: 12px; min-height: 300px; }
+  .cfg-search-bar { width: 100%; }
+}
 </style>

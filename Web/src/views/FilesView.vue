@@ -115,90 +115,7 @@
               <p>该分类下暂无文件</p>
             </div>
 
-            <!-- 插件列表 -->
-            <template v-else-if="activeTab === 'plugins'">
-              <div v-for="f in currentCategory.files" :key="f.name" class="plugin-row">
-                <label class="row-check">
-                  <input type="checkbox" :value="f.full_path || f.name" v-model="selectedPaths">
-                </label>
-                <div class="pr-info">
-                  <span class="ft-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                      <polyline points="7.5 4.21 12 6.81 16.5 4.21"/>
-                      <polyline points="7.5 19.79 7.5 14.6 3 12"/>
-                      <polyline points="21 12 16.5 14.6 16.5 19.79"/>
-                      <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-                      <line x1="12" y1="22.08" x2="12" y2="12"/>
-                    </svg>
-                  </span>
-                  <span class="pr-name">{{ f.name }}</span>
-                  <span v-if="f.dir" class="ft-dir-badge" :title="f.dir">{{ shortDir(f.dir) }}</span>
-                </div>
-                <div class="pr-right">
-                  <span class="pr-size">{{ formatBytes(f.size) }}</span>
-                </div>
-              </div>
-            </template>
-
-            <!-- 世界存档：卡片式，突出显示路径 -->
-            <template v-else-if="activeTab === 'worlds'">
-              <div v-for="f in currentCategory.files" :key="f.full_path || f.name" class="world-card">
-                <label class="row-check world-check">
-                  <input type="checkbox" :value="f.full_path || f.name" v-model="selectedPaths">
-                </label>
-                <div class="wc-body">
-                  <div class="wc-head">
-                    <span class="wc-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                    </span>
-                    <span class="wc-name">{{ f.name }}</span>
-                    <span class="wc-size">{{ formatBytes(f.size) }}</span>
-                  </div>
-                  <div class="wc-dir">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                    </svg>
-                    <span class="wc-dir-path">{{ f.dir }}</span>
-                  </div>
-                  <div class="wc-meta">最后修改：{{ f.modified }}</div>
-                </div>
-              </div>
-            </template>
-
-            <!-- 数据库文件：专用列表，带浏览按钮 -->
-            <template v-else-if="activeTab === 'databases'">
-              <div class="mgmt-head">
-                <span></span><span>文件名</span><span>大小</span><span>修改时间</span><span></span>
-              </div>
-              <div v-for="f in currentCategory.files" :key="f.full_path || f.name" class="mgmt-row">
-                <label class="row-check">
-                  <input type="checkbox" :value="f.full_path || f.name" v-model="selectedPaths">
-                </label>
-                <span class="mr-name">
-                  <span class="ft-icon ft-icon-db">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-                  </span>
-                  {{ f.name }}
-                  <span v-if="f.dir" class="ft-dir-badge" :title="f.dir">{{ shortDir(f.dir) }}</span>
-                </span>
-                <span class="mr-size">{{ formatBytes(f.size) }}</span>
-                <span class="mr-date">{{ f.modified }}</span>
-                <span class="mr-actions">
-                  <button
-                    class="mr-edit-btn mr-db-btn"
-                    @click.stop="openDbBrowser(f)"
-                    :disabled="!canBrowseDatabase"
-                    :title="canBrowseDatabase ? '浏览数据库' : '缺少数据库浏览权限'"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-                    浏览
-                  </button>
-                </span>
-              </div>
-            </template>
-
-            <!-- 通用文件管理（配置文件、日志等）-->
+            <!-- 通用文件管理（所有分类统一表格布局）-->
             <template v-else>
               <div class="mgmt-head">
                 <span></span><span>文件名</span><span>大小</span><span>修改时间</span><span></span>
@@ -208,8 +125,13 @@
                   <input type="checkbox" :value="f.full_path || f.name" v-model="selectedPaths">
                 </label>
                 <span class="mr-name">
-                  <span class="ft-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <span class="ft-icon" :class="activeTab === 'plugins' ? 'ft-icon-plugin' : (activeTab === 'worlds' ? 'ft-icon-world' : '')">
+                    <svg v-if="activeTab === 'plugins'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                      <polyline points="7.5 4.21 12 6.81 16.5 4.21"/>
+                    </svg>
+                    <svg v-else-if="activeTab === 'worlds'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                    <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                       <polyline points="14 2 14 8 20 8"/>
                     </svg>
@@ -220,7 +142,18 @@
                 <span class="mr-size">{{ formatBytes(f.size) }}</span>
                 <span class="mr-date">{{ f.modified }}</span>
                 <span class="mr-actions">
-                  <button
+                  <template v-if="activeTab === 'databases'">
+                    <button
+                      class="mr-edit-btn mr-db-btn"
+                      @click.stop="openDbBrowser(f)"
+                      :disabled="!canBrowseDatabase"
+                      :title="canBrowseDatabase ? '浏览数据库' : '缺少数据库浏览权限'"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                      浏览
+                    </button>
+                  </template>
+                  <button v-else
                     class="mr-edit-btn"
                     @click.stop="editFile(f)"
                     :disabled="!canWriteFiles"
@@ -1211,43 +1144,9 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* ── 世界存档卡片 ── */
-.world-card {
-  position: relative;
-  display: flex; align-items: flex-start; gap: 6px;
-  padding: 14px 18px 14px 42px;
-  border-top: 1px solid #f1f5f9;
-  transition: background .1s;
-}
-.world-card:first-child { border-top: none; }
-.world-card:hover { background: #f8fafc; }
-.wc-body { flex: 1; min-width: 0; }
-
-.wc-head {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 6px;
-}
-.wc-icon {
-  display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; flex-shrink: 0;
-  background: #eff6ff; border-radius: 6px;
-}
-.wc-icon svg { width: 16px; height: 16px; stroke: #3b82f6; }
-.wc-name { font-size: 15px; font-weight: 700; color: #0f172a; flex: 1; }
-.wc-size { font-size: 12px; color: #94a3b8; font-family: 'Courier New', monospace; }
-
-.wc-dir {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 10px;
-  background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 7px;
-  margin-bottom: 5px;
-}
-.wc-dir svg { width: 13px; height: 13px; color: #3b82f6; flex-shrink: 0; }
-.wc-dir-path {
-  font-size: 12px; color: #1d4ed8; font-family: 'Courier New', monospace;
-  word-break: break-all;
-}
-.wc-meta { font-size: 12px; color: #94a3b8; }
+/* ── 统一文件表格 ── */
+.ft-icon-plugin svg { stroke: #8b5cf6; }
+.ft-icon-world  svg { stroke: #3b82f6; }
 
 /* ── 普通文件表格 ── */
 .ft-head {
@@ -1313,7 +1212,7 @@ onUnmounted(() => {
 }
 .btn-fetch:hover:not(:disabled) { background: #1d4ed8; }
 
-/* ── 行御复选框 ── */
+/* ── 行内复选框 ── */
 .row-check {
   display: flex; align-items: center;
   padding: 0 4px 0 2px; flex-shrink: 0;
@@ -1323,33 +1222,6 @@ onUnmounted(() => {
   width: 15px; height: 15px; cursor: pointer;
   accent-color: #2563eb;
 }
-.world-check {
-  position: absolute; top: 14px; left: 14px;
-}
-
-/* ── 插件行 ── */
-.plugin-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 11px 18px;
-  border-top: 1px solid #f1f5f9;
-  transition: background .1s;
-}
-.plugin-row:first-child { border-top: none; }
-.plugin-row:hover { background: #f8fafc; }
-.pr-info  { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; }
-.pr-name  { font-size: 13px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pr-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-.pr-size  { font-size: 12px; color: #94a3b8; font-family: 'Courier New', monospace; white-space: nowrap; }
-/* ── 配置文件行（带编辑列）── */
-.cfg-head { grid-template-columns: 1fr 110px 185px 72px !important; }
-.cfg-row  { grid-template-columns: 1fr 110px 185px 72px !important; }
-.cfg-actions { display: flex; align-items: center; justify-content: flex-end; }
-.cfg-edit-btn {
-  padding: 3px 9px; border-radius: 5px; font-size: 12px; font-weight: 500;
-  background: #f8fafc; color: #475569; border: 1px solid #e2e8f0;
-  cursor: pointer; transition: all .12s;
-}
-.cfg-edit-btn:hover { background: #f1f5f9; border-color: #cbd5e1; }
 
 /* ── 通用文件管理行 ── */
 .mgmt-head {
@@ -1766,5 +1638,47 @@ onUnmounted(() => {
   .ft-head, .ft-row { grid-template-columns: 1fr 80px; }
   .ft-head span:last-child, .ft-row .ft-date { display: none; }
   .fh-dir { max-width: 200px; }
+
+  .mgmt-head, .mgmt-row {
+    grid-template-columns: 24px 1fr auto auto;
+  }
+  .mgmt-head span:nth-child(3),
+  .mgmt-row .mr-size { display: none; }
+  .mgmt-head span:nth-child(4),
+  .mgmt-row .mr-date { font-size: 10px; }
+  .mr-actions { gap: 2px; }
+  .mr-edit-btn { padding: 3px 6px; font-size: 11px; }
+
+  .sel-toolbar {
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+  .sel-actions { flex-wrap: wrap; gap: 4px; }
+  .sel-btn { font-size: 11px; padding: 5px 10px; }
+
+  .tab-bar {
+    overflow-x: auto;
+    gap: 4px;
+    padding-bottom: 4px;
+  }
+  .tab-btn {
+    padding: 6px 10px;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+
+  .tree-row { padding-right: 8px; }
+  .tr-name { font-size: 13px; }
+
+  .editor-modal {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+    margin: 0;
+  }
+  .em-json-editor { font-size: 12px; }
 }
 </style>

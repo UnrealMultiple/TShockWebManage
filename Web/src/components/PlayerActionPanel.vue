@@ -622,4 +622,19 @@ defineExpose({
 /* ── slide form ─────────────────────────────── */
 .pap-slide-enter-active, .pap-slide-leave-active { transition: opacity .15s, max-height .2s; max-height: 80px; overflow: hidden; }
 .pap-slide-enter-from, .pap-slide-leave-to { opacity: 0; max-height: 0; }
+
+@media (max-width: 768px) {
+  .pap-panel {
+    width: 100vw;
+    max-width: 100vw;
+    border-radius: 16px 16px 0 0;
+    max-height: 85vh;
+    padding: 14px;
+  }
+  .pap-header { flex-wrap: wrap; gap: 8px; }
+  .pap-actions-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .pap-info-grid { grid-template-columns: 1fr; }
+  .pap-inline-form { flex-direction: column; gap: 6px; }
+  .pap-input { width: 100%; }
+}
 </style>

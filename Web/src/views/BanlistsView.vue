@@ -31,10 +31,10 @@
       </template>
     </PageHeader>
 
-    <div class="bl-body">
-      <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理封禁列表。请先启动服务器。" />
+    <AgentOfflineNotice v-if="!agentOnline" message="Agent 未连接，无法管理封禁列表。请先启动服务器。" />
 
-      <div v-else-if="!activeServerKey" class="state-box state-empty">
+    <div v-else class="bl-body">
+      <div v-if="!activeServerKey" class="state-box state-empty">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <rect x="3" y="3" width="18" height="18" rx="2"/>
           <line x1="9" y1="3" x2="9" y2="21"/>
@@ -372,6 +372,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getListByType, getZhName, loadTerrariaIDs } from '@/config/terraria_ids'
 import AgentOfflineNotice from '@/components/AgentOfflineNotice.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import { itemImage } from '@/utils/assetPath.js'
 
 const props = defineProps({
   agentOnline: { type: Boolean, default: false },
@@ -416,24 +417,22 @@ const form = ref({ type: 'item', id: '', allowedGroups: [] })
 const tabLabelByType = (t) => ({ tile: '图格', item: '物品', proj: '弹幕' }[t] || '')
 const tabLabel = computed(() => tabLabelByType(activeTab.value))
 
-function itemImage(id) {
-  return `/items/${id}.png`
-}
-
 function hideBrokenImage(event) {
   const img = event?.target
   if (!img) return
 
   const currentSrc = String(img.getAttribute('src') || '')
   if (!img.dataset.fallbackTried) {
-    if (currentSrc.includes('/items/')) {
+    const itemsPath = import.meta.env.BASE_URL + 'items/'
+    const resourcesItemsPath = import.meta.env.BASE_URL + 'resources/items/'
+    if (currentSrc.includes(itemsPath)) {
       img.dataset.fallbackTried = '1'
-      img.src = currentSrc.replace('/items/', '/resources/items/')
+      img.src = currentSrc.replace(itemsPath, resourcesItemsPath)
       return
     }
-    if (currentSrc.includes('/resources/items/')) {
+    if (currentSrc.includes(resourcesItemsPath)) {
       img.dataset.fallbackTried = '1'
-      img.src = currentSrc.replace('/resources/items/', '/items/')
+      img.src = currentSrc.replace(resourcesItemsPath, itemsPath)
       return
     }
   }
