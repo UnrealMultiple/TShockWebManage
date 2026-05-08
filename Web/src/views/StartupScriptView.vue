@@ -39,10 +39,7 @@
         <div class="ss-spinner"></div>
         <span>正在读取…</span>
       </div>
-      <div v-else-if="loadError" class="ss-error">
-        读取失败：{{ loadError }}
-        <button class="ss-btn ss-btn-outline" style="margin-top:10px" @click="loadScript" :disabled="!agentOnline">重试</button>
-      </div>
+      <AgentOfflineNotice v-else-if="loadError" type="error" :message="loadError" show-retry @retry="loadScript" />
 
       <template v-else-if="scriptLoaded">
         <!-- Toast -->

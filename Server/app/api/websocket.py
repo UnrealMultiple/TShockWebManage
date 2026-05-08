@@ -151,6 +151,71 @@ def _is_safe_table_browser_query(sql: str) -> bool:
     return False
 
 
+def required_tshock_permission(req_type: str):
+    """返回 TShock 管理操作所需的细粒度面板权限。返回 None 表示无需额外权限（走兜底）。"""
+    mapping = {
+        # TShock 配置
+        "read_tshock_config":     "panel.tshock.config",
+        "write_tshock_config":    "panel.tshock.config",
+        "reload_tshock":          "panel.tshock.config",
+        "read_startup_script":    "panel.tshock.config",
+        "write_startup_script":   "panel.tshock.config",
+        "read_motd":              "panel.tshock.config",
+        "write_motd":             "panel.tshock.config",
+        # 插件管理
+        "plugin_list_configs":    "panel.plugins",
+        "plugin_local_doc_read":  "panel.plugins",
+        "plugin_cloud_list":      "panel.plugins",
+        "plugin_check_apm":       "panel.plugins",
+        "plugin_install_apm":     "panel.plugins",
+        "plugin_local_list":      "panel.plugins",
+        "plugin_install":         "panel.plugins",
+        "plugin_uninstall":       "panel.plugins",
+        "plugin_check_updates":   "panel.plugins",
+        "plugin_update":          "panel.plugins",
+        "plugin_disable":         "panel.plugins",
+        "plugin_enable":          "panel.plugins",
+        "plugin_blacklist":       "panel.plugins",
+        # 地图信息
+        "get_minimap":            "panel.minimap",
+        "get_player_positions":   "panel.minimap",
+        # 封禁管理
+        "list_bans":              "panel.bans",
+        "unban_by_ticket":        "panel.bans",
+        "update_ban_expiration":  "panel.bans",
+        # 封禁列表配置
+        "list_banlists":          "panel.banlists",
+        "add_banlist":            "panel.banlists",
+        "remove_banlist":         "panel.banlists",
+        # 权限组
+        "get_groups":             "panel.groups",
+        "list_game_groups":       "panel.groups",
+        "create_game_group":      "panel.groups",
+        "update_game_group":      "panel.groups",
+        "delete_game_group":      "panel.groups",
+    }
+    return mapping.get(req_type)
+
+
+_TSHOCK_SUB_PERMS = {
+    "panel.tshock.config", "panel.plugins", "panel.minimap",
+    "panel.bans", "panel.banlists", "panel.groups",
+}
+
+
+def _has_tshock_wildcard(email: str, agent_key: str) -> bool:
+    """检查用户是否拥有 panel.tshock.*（覆盖所有 TShock 管理子权限）。"""
+    return has_panel_permission(email, agent_key, "panel.tshock.*")
+
+
+def file_db_bypass(email: str, agent_key: str, req_type: str) -> bool:
+    """插件管理权限可绕过文件读写权限检查。"""
+    if req_type in ("file_read", "file_write"):
+        if has_panel_permission(email, agent_key, "panel.plugins") or _has_tshock_wildcard(email, agent_key):
+            return True
+    return False
+
+
 def required_file_db_permission(req_type: str, payload: dict):
     if req_type == "file_read":
         return "panel.files"
@@ -829,37 +894,45 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                     continue
 
                 req_type = packet.get("type")
+
+                # 1) 文件/数据库操作
                 needed_permission = required_file_db_permission(req_type, payload)
                 if needed_permission:
-                    if not has_panel_permission(email, target_key, needed_permission):
+                    if not has_panel_permission(email, target_key, needed_permission) and not file_db_bypass(email, target_key, req_type):
                         await websocket.send_text(manager.make_envelope(resp_type, {
                             "ref_id": packet.get("msg_id"),
                             "success": False,
                             "msg": f"无权限，缺少 {needed_permission} 权限"
                         }))
                         continue
-                elif not has_console_access(email, target_key):
-                    # 背包查看支持细粒度权限：自己 / 他人
-                    if req_type == "get_inventory":
-                        username = (payload.get("username") or "").strip()
-                        is_self = is_character_owner(email, target_key, username)
-                        needed = "panel.inventory.view.self" if is_self else "panel.inventory.view.others"
-                        if not has_panel_permission(email, target_key, needed):
-                            hint = "无权限，缺少查看自己背包权限" if is_self else "无权限，缺少查看他人背包权限"
+                # 2) 背包查看（细粒度）
+                elif req_type == "get_inventory":
+                    username = (payload.get("username") or "").strip()
+                    is_self = is_character_owner(email, target_key, username)
+                    needed = "panel.inventory.view.self" if is_self else "panel.inventory.view.others"
+                    if not has_panel_permission(email, target_key, needed):
+                        hint = "无权限，缺少查看自己背包权限" if is_self else "无权限，缺少查看他人背包权限"
+                        await websocket.send_text(manager.make_envelope(resp_type, {
+                            "ref_id": packet.get("msg_id"), "success": False, "msg": hint
+                        }))
+                        continue
+                # 3) 背包修改
+                elif req_type == "save_inventory":
+                    await websocket.send_text(manager.make_envelope(resp_type, {
+                        "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，仅服务器 Owner 可修改背包"
+                    }))
+                    continue
+                # 4) TShock 管理操作
+                else:
+                    needed = required_tshock_permission(req_type)
+                    if needed:
+                        if not has_panel_permission(email, target_key, needed) and not _has_tshock_wildcard(email, target_key):
                             await websocket.send_text(manager.make_envelope(resp_type, {
-                                "ref_id": packet.get("msg_id"), "success": False, "msg": hint
+                                "ref_id": packet.get("msg_id"),
+                                "success": False,
+                                "msg": f"无权限，缺少 {needed} 或 panel.tshock.* 权限"
                             }))
                             continue
-                    elif req_type == "save_inventory":
-                        await websocket.send_text(manager.make_envelope(resp_type, {
-                            "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，仅服务器 Owner 可修改背包"
-                        }))
-                        continue
-                    else:
-                        await websocket.send_text(manager.make_envelope(resp_type, {
-                            "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，需要服务器 Owner 或对应权限"
-                        }))
-                        continue
 
                 if target_key not in manager.active_agents:
                     await websocket.send_text(manager.make_envelope(resp_type, {
@@ -969,33 +1042,31 @@ async def agent_endpoint(websocket: WebSocket, agent_key: str = Query(default=""
                 await broadcast_agent_to_members(agent_key, raw)
 
             elif packet.get("type") in ("get_char_info_resp", "send_bind_code_resp",
-                                        "world_progress_resp", "player_stats_resp"):
+                                        "world_progress_resp", "player_stats_resp",
+                                        "read_tshock_config_resp", "write_tshock_config_resp",
+                                        "read_startup_script_resp", "write_startup_script_resp",
+                                        "read_motd_resp", "write_motd_resp", "reload_tshock_resp",
+                                        "plugin_list_configs_resp", "plugin_local_doc_read_resp", "plugin_cloud_list_resp",
+                                        "plugin_check_apm_resp", "plugin_install_apm_resp",
+                                        "plugin_local_list_resp", "plugin_install_resp", "plugin_uninstall_resp",
+                                        "plugin_check_updates_resp", "plugin_update_resp",
+                                        "plugin_disable_resp", "plugin_enable_resp", "plugin_blacklist_resp",
+                                        "minimap_resp", "player_positions_resp",
+                                        "get_inventory_resp", "save_inventory_resp",
+                                        "list_bans_resp", "unban_by_ticket_resp", "update_ban_expiration_resp",
+                                        "list_banlists_resp", "add_banlist_resp", "remove_banlist_resp",
+                                        "change_password_resp", "get_groups_resp", "list_game_groups_resp",
+                                        "create_game_group_resp", "update_game_group_resp", "delete_game_group_resp",
+                                        "file_list_resp", "file_read_resp", "file_write_resp",
+                                        "file_move_resp", "file_copy_resp", "file_delete_resp",
+                                        "db_query_resp", "db_exec_resp", "db_update_row_resp",
+                                        "db_delete_row_resp", "db_insert_row_resp"):
                 await broadcast_agent_to_members(agent_key, raw)
 
-            elif packet.get("type") == "read_startup_script_resp":
-                await broadcast_agent_to_authorized_webs(agent_key, raw)
-
             elif packet.get("type") in ("log", "cmd_resp", "chat",
-                                       "file_list_resp", "server_ctrl_resp",
-                                       "file_read_resp", "file_write_resp", "file_move_resp", "file_copy_resp", "file_delete_resp",
-                                       "db_query_resp", "db_exec_resp", "db_update_row_resp",
-                                       "db_delete_row_resp", "db_insert_row_resp",
+                                       "server_ctrl_resp",
                                        "player_list_resp", "player_action_resp",
-                                       "delete_user_resp", "read_tshock_config_resp", "write_tshock_config_resp",
-                                       "write_startup_script_resp",
-                                       "read_motd_resp", "write_motd_resp",
-                                       "reload_tshock_resp",
-                                       "plugin_list_configs_resp", "plugin_local_doc_read_resp", "plugin_cloud_list_resp",
-                                       "plugin_check_apm_resp", "plugin_install_apm_resp",
-                                       "plugin_local_list_resp", "plugin_install_resp", "plugin_uninstall_resp",
-                                       "plugin_check_updates_resp", "plugin_update_resp",
-                                       "plugin_disable_resp", "plugin_enable_resp", "plugin_blacklist_resp",
-                                       "minimap_resp", "player_positions_resp",
-                                       "get_inventory_resp", "save_inventory_resp",
-                                       "list_bans_resp", "unban_by_ticket_resp", "update_ban_expiration_resp",
-                                       "list_banlists_resp", "add_banlist_resp", "remove_banlist_resp",
-                                       "change_password_resp", "get_groups_resp", "list_game_groups_resp",
-                                       "create_game_group_resp", "update_game_group_resp", "delete_game_group_resp"):
+                                       "delete_user_resp"):
                 await broadcast_agent_to_authorized_webs(agent_key, raw)
     except WebSocketDisconnect:
         print(f"[Agent离线] key={agent_key}")

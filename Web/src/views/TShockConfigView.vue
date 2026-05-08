@@ -47,19 +47,8 @@
         <span>正在从服务器读取配置…</span>
       </div>
 
-      <!-- 错误 -->
-      <div v-else-if="loadError" class="cfg-error">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        <div>
-          <strong>读取失败</strong>
-          <p>{{ loadError }}</p>
-          <button class="cfg-btn cfg-btn-outline" style="margin-top:8px" @click="loadConfig">重试</button>
-        </div>
-      </div>
+      <!-- 读取失败 -->
+      <AgentOfflineNotice v-else-if="loadError" type="error" :message="loadError" show-retry :retry-label="'重试'" @retry="loadConfig" />
 
       <!-- 空状态 -->
       <div v-else-if="!configLoaded" class="cfg-empty">

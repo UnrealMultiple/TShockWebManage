@@ -185,9 +185,9 @@
               <div class="perm-group-title">超级权限</div>
               <div class="perm-checks">
                 <label class="perm-check perm-check-wild">
-                  <input type="checkbox" value="tshock.*" v-model="form.permissions" :disabled="hasWildcard" />
+                  <input type="checkbox" value="panel.tshock.*" v-model="form.permissions" :disabled="hasWildcard" />
                   <span class="perm-check-label">全部 TShock 管理权限</span>
-                  <span class="perm-tag-sm tag-tshock">tshock.*</span>
+                  <span class="perm-tag-sm tag-tshock">panel.tshock.*</span>
                 </label>
                 <label class="perm-check perm-check-wild">
                   <input type="checkbox" value="*" v-model="form.permissions" />
@@ -358,21 +358,19 @@ const PANEL_PERMISSION_PLAN = [
     key: 'tshock-ops',
     title: 'TShock 运营管理',
     items: [
-      { value: 'tshock.startup', label: '启动脚本', desc: '编辑启动脚本参数。' },
-      { value: 'tshock.motd', label: '欢迎消息', desc: '编辑 MOTD 欢迎信息。' },
-      { value: 'tshock.config', label: 'TShock 配置', desc: '编辑 tshock/config。' },
-      { value: 'tshock.ssc', label: 'SSC 设置', desc: '管理 SSC 同步和角色控制。' },
-      { value: 'tshock.plugins', label: '插件管理', desc: '管理插件安装、配置和更新。' },
-      { value: 'tshock.groups', label: '游戏权限组', desc: '管理游戏内权限组。' },
-      { value: 'tshock.bans', label: '封禁管理', desc: '管理用户封禁记录。' },
-      { value: 'tshock.banlists', label: '图格物品弹幕封禁', desc: '管理 banlists 相关条目。' },
+      { value: 'panel.tshock.config', label: 'TShock 配置', desc: '编辑 tshock/config、启动脚本、MOTD 等。' },
+      { value: 'panel.plugins', label: '插件管理', desc: '管理插件安装、配置和更新。' },
+      { value: 'panel.minimap', label: '小地图', desc: '查看小地图及玩家位置。' },
+      { value: 'panel.groups', label: '游戏权限组', desc: '管理游戏内权限组。' },
+      { value: 'panel.bans', label: '封禁管理', desc: '管理用户封禁记录。' },
+      { value: 'panel.banlists', label: '图格物品弹幕封禁', desc: '管理 banlists 相关条目。' },
     ],
   },
   {
     key: 'wildcard',
     title: '通配权限',
     items: [
-      { value: 'tshock.*', label: '全部 TShock 权限', desc: '授予全部 tshock.* 权限。' },
+      { value: 'panel.tshock.*', label: '全部 TShock 管理权限', desc: '授予所有 panel.tshock.* / panel.plugins / panel.bans 等子权限。' },
       { value: '*', label: '全部权限', desc: '授予全部权限，慎用。' },
     ],
   },
@@ -458,11 +456,11 @@ const customPerm   = ref('')
 
 const form = ref({ name: '', description: '', parent_group_id: null, permissions: [] })
 
-const KNOWN_PERMS = [...PANEL_PERMS.map(p => p.value), ...TSHOCK_PERMS.map(p => p.value), 'tshock.*', '*']
+const KNOWN_PERMS = [...PANEL_PERMS.map(p => p.value), ...TSHOCK_PERMS.map(p => p.value), 'panel.tshock.*', '*']
 
 const customPerms = computed(() => form.value.permissions.filter(p => !KNOWN_PERMS.includes(p)))
 const hasWildcard  = computed(() => form.value.permissions.includes('*'))
-const hasTshockWild = computed(() => form.value.permissions.includes('tshock.*'))
+const hasTshockWild = computed(() => form.value.permissions.includes('panel.tshock.*'))
 
 function addCustomPerm() {
   const v = customPerm.value.trim()

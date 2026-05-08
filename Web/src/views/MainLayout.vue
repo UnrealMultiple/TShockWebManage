@@ -181,7 +181,7 @@
               </router-link>
 
               <!-- TShock管理（可展开分组） -->
-              <div v-if="hasPerm('tshock.config')" class="nav-group">
+              <div v-if="hasPerm('panel.tshock.*')" class="nav-group">
                 <div class="nav-group-header" @click="tshockGroupOpen = !tshockGroupOpen">
                   <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="3"/>
@@ -617,14 +617,14 @@ const ROUTE_PERM_MAP = {
   '/users':           'panel.users',
   '/panel-features':  'panel.features',
   '/platform-admin':  'platform.admin',
-  '/tshock/startup':  'tshock.startup',
-  '/tshock/motd':     'tshock.motd',
-  '/tshock/config':   'tshock.config',
-  '/tshock/ssc':      'tshock.ssc',
-  '/tshock/plugins':  'tshock.plugins',
-  '/tshock/groups':   'tshock.groups',
-  '/tshock/bans':     'tshock.bans',
-  '/tshock/banlists': 'tshock.banlists',
+  '/tshock/startup':  'panel.tshock.config',
+  '/tshock/motd':     'panel.tshock.config',
+  '/tshock/config':   'panel.tshock.config',
+  '/tshock/ssc':      'panel.tshock.config',
+  '/tshock/plugins':  'panel.plugins',
+  '/tshock/groups':   'panel.groups',
+  '/tshock/bans':     'panel.bans',
+  '/tshock/banlists': 'panel.banlists',
 }
 
 watch(
@@ -644,7 +644,10 @@ watch(
     }
     const requiredPerm = ROUTE_PERM_MAP[path]
     if (requiredPerm && !hasPerm(requiredPerm)) {
-      router.replace('/dashboard')
+      // panel.tshock.* 通配覆盖所有 TShock 子页面
+      if (!(requiredPerm.startsWith('panel.') && hasPerm('panel.tshock.*'))) {
+        router.replace('/dashboard')
+      }
     }
   },
   { immediate: true }

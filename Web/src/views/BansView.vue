@@ -25,13 +25,7 @@
         <span>正在加载封禁列表...</span>
       </div>
 
-      <div v-else-if="loadError" class="state-box state-error">
-        <div>
-          <strong>加载失败</strong>
-          <p>{{ loadError }}</p>
-          <button class="btn btn-sm btn-outline" style="margin-top:8px" @click="loadBans">重试</button>
-        </div>
-      </div>
+      <AgentOfflineNotice v-else-if="loadError" type="error" :message="loadError" show-retry @retry="loadBans" />
 
       <template v-else>
         <div v-if="toast" :class="['toast', toast.ok ? 'toast-ok' : 'toast-err']">

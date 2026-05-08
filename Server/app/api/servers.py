@@ -81,6 +81,9 @@ _DEFAULT_PANEL_GROUPS = [
             "panel.membership.review", "panel.invites.manage",
             "panel.inventory.view.self", "panel.inventory.view.others",
             "panel.announcements", "panel.blacklist",
+            "panel.tshock.*",
+            "panel.tshock.config", "panel.plugins", "panel.minimap",
+            "panel.bans", "panel.banlists", "panel.groups",
         ],
     },
     {

@@ -418,6 +418,30 @@ async def audit_server(
     db.add(log)
 
     db.commit()
+
+    # 向服主发送审核结果通知
+    if server.owner_id:
+        if action == "approve":
+            create_notification(
+                receiver_user_id=server.owner_id,
+                msg_type="server_audit",
+                title="服务器审核通过",
+                content=f"您的服务器「{server.name}」已通过平台审核",
+                server_id=server_id,
+                ref_type="server",
+                ref_id=server_id,
+            )
+        elif action == "reject":
+            create_notification(
+                receiver_user_id=server.owner_id,
+                msg_type="server_audit",
+                title="服务器审核未通过",
+                content=f"您的服务器「{server.name}」未通过平台审核，原因：{reason or '未提供'}",
+                server_id=server_id,
+                ref_type="server",
+                ref_id=server_id,
+            )
+
     return {"message": "审核完成", "status": server.platform_audit_status}
 
 

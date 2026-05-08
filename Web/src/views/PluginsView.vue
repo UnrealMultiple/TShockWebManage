@@ -115,7 +115,7 @@
                       :can-use-raw-sql="canUseRawSql"
                       embedded
                     />
-                    <div v-else class="plg-error">缺少数据库浏览权限，无法打开 SQLite 配置。</div>
+                    <AgentOfflineNotice v-else type="permission" message="缺少数据库浏览权限，无法打开 SQLite 配置。" compact />
                   </div>
                   <div v-if="isLibraryConfigFile(selectedConfig) || selectedConfig.md_path" class="plg-doc-panel">
                     <div class="plg-doc-header">
@@ -140,7 +140,7 @@
                 <div v-else-if="cfgLoading" class="plg-loading" style="margin:24px">
                   <div class="plg-spinner"></div><span>读取文件中…</span>
                 </div>
-                <div v-else-if="cfgError" class="plg-error">{{ cfgError }}</div>
+                <AgentOfflineNotice v-else-if="cfgError" type="error" :message="cfgError" show-retry @retry="reloadCfg" />
 
                 <!-- 正文：编辑器（中）+ 文档面板（右，仅插件库） -->
                 <div v-else class="plg-content-row">
@@ -375,18 +375,7 @@
         <div v-if="cloudLoading" class="plg-loading">
             <div class="plg-spinner"></div><span>正在从云端拉取插件列表…</span>
           </div>
-          <div v-else-if="cloudError" class="plg-error" style="margin:24px">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            <div>
-              <strong>{{ cloudErrorTitle }}</strong>
-              <p>{{ cloudError }}</p>
-              <button class="plg-btn plg-btn-outline" style="margin-top:8px" @click="loadCloudList">重试</button>
-            </div>
-          </div>
+          <AgentOfflineNotice v-else-if="cloudError" type="error" :message="`${cloudErrorTitle}：${cloudError}`" show-retry @retry="loadCloudList" />
           <template v-else-if="cloudPlugins.length > 0">
             <div class="plg-install-bar">
               <div class="plg-install-search-wrap">
