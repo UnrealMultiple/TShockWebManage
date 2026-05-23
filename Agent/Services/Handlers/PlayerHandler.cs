@@ -1771,8 +1771,10 @@ namespace TerrariaManagerAgent.Services.Handlers
             {
                 if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(newPassword))
                     throw new Exception("用户名和新密码不能为空");
+                if (newPassword.Length < 6)
+                    throw new Exception("密码至少6位");
 
-                var account = TShock.UserAccounts.GetUserAccountByName(username);
+                var account = ResolveUserAccountLoose(username);
                 if (account == null)
                     throw new Exception($"账号 \"{username}\" 不存在");
 

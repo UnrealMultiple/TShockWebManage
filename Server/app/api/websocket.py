@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.core.config import AUTH_DB_PATH
 from app.core.utils import verify_token, new_id, now_ms
@@ -134,6 +134,36 @@ def has_panel_permission(email: str, agent_key: str, permission: str) -> bool:
         return False
 
 
+def has_server_management_access(email: str, agent_key: str, permissions: List[str]) -> bool:
+    agent_key = _normalize_agent_key(agent_key)
+    if not agent_key:
+        return False
+    try:
+        with sqlite3.connect(AUTH_DB_PATH) as conn:
+            row = conn.execute(
+                """
+                SELECT sm.user_id, sm.role, s.id, s.owner_id, spg.permissions
+                FROM users u
+                JOIN ServerMembers sm ON sm.user_id = u.id
+                JOIN servers s ON s.id = sm.server_id
+                LEFT JOIN ServerAccessGroups spg ON spg.id = sm.access_group_id
+                WHERE u.email=? COLLATE NOCASE
+                  AND s.agent_key=?
+                LIMIT 1
+                """,
+                (email, agent_key),
+            ).fetchone()
+            if not row:
+                return False
+            user_id, role, _server_id, owner_id, raw_permissions = row
+            if owner_id == user_id or role in ("owner", "web_staff"):
+                return True
+            granted = _load_permissions(raw_permissions or "[]")
+            return any(_has_permission(granted, p) for p in permissions)
+    except Exception:
+        return False
+
+
 def _normalize_sql(sql: str) -> str:
     return re.sub(r"\s+", " ", (sql or "").strip()).strip()
 
@@ -208,11 +238,15 @@ def _has_tshock_wildcard(email: str, agent_key: str) -> bool:
     return has_panel_permission(email, agent_key, "panel.tshock.*")
 
 
-def file_db_bypass(email: str, agent_key: str, req_type: str) -> bool:
-    """插件管理权限可绕过文件读写权限检查。"""
-    if req_type in ("file_read", "file_write"):
-        if has_panel_permission(email, agent_key, "panel.plugins") or _has_tshock_wildcard(email, agent_key):
-            return True
+def file_db_bypass(email: str, agent_key: str, req_type: str, payload: Optional[dict] = None) -> bool:
+    """插件管理权限可使用插件配置所需的文件/SQLite 可视化操作。"""
+    plugin_config_ops = {"file_read", "file_write", "db_update_row", "db_delete_row", "db_insert_row"}
+    if req_type == "db_query" and _is_safe_table_browser_query((payload or {}).get("sql", "")):
+        plugin_config_ops.add("db_query")
+    if req_type in plugin_config_ops and (
+        has_panel_permission(email, agent_key, "panel.plugins") or _has_tshock_wildcard(email, agent_key)
+    ):
+        return True
     return False
 
 
@@ -844,9 +878,19 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
 
                 # get_status / world_progress / player_stats 所有成员可查
                 if packet.get("type") in ("player_list", "player_action"):
-                    if not has_console_access(email, target_key):
+                    if packet.get("type") == "player_action":
+                        can_use_player_action = has_server_management_access(email, target_key, [
+                            "panel.console",
+                            "panel.users",
+                            "panel.groups",
+                            "panel.bans",
+                            "panel.tshock.*",
+                        ])
+                    else:
+                        can_use_player_action = has_console_access(email, target_key)
+                    if not can_use_player_action:
                         await websocket.send_text(manager.make_envelope(resp_type, {
-                            "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，需要服务器 Owner 或 panel.console 权限"
+                            "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，需要服务器管理权限"
                         }))
                         continue
                 else:
@@ -878,7 +922,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                                           "plugin_check_updates", "plugin_update",
                                           "plugin_disable", "plugin_enable", "plugin_blacklist",
                                           "get_minimap", "get_player_positions",
-                                          "get_inventory", "save_inventory",
+                                          "get_inventory", "save_inventory", "change_password",
                                           "list_bans", "unban_by_ticket", "update_ban_expiration",
                                           "list_banlists", "add_banlist", "remove_banlist",
                                           "get_groups", "list_game_groups",
@@ -898,7 +942,7 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                 # 1) 文件/数据库操作
                 needed_permission = required_file_db_permission(req_type, payload)
                 if needed_permission:
-                    if not has_panel_permission(email, target_key, needed_permission) and not file_db_bypass(email, target_key, req_type):
+                    if not has_panel_permission(email, target_key, needed_permission) and not file_db_bypass(email, target_key, req_type, payload):
                         await websocket.send_text(manager.make_envelope(resp_type, {
                             "ref_id": packet.get("msg_id"),
                             "success": False,
@@ -922,11 +966,50 @@ async def web_endpoint(websocket: WebSocket, token: str = Query(default="")):
                         "ref_id": packet.get("msg_id"), "success": False, "msg": "无权限，仅服务器 Owner 可修改背包"
                     }))
                     continue
-                # 4) TShock 管理操作
+                # 4) 已绑定角色修改密码
+                elif req_type == "change_password":
+                    username = (payload.get("username") or "").strip()
+                    new_password = payload.get("new_password") or ""
+                    BLACKLIST = {
+                        "123456", "password", "123456789", "12345678", "12345",
+                        "1234567", "111111", "000000", "qwerty", "abc123",
+                        "letmein", "admin", "welcome", "monkey", "master",
+                    }
+                    if not username:
+                        await websocket.send_text(manager.make_envelope(resp_type, {
+                            "ref_id": packet.get("msg_id"), "success": False, "msg": "角色名不能为空"
+                        }))
+                        continue
+                    if not is_character_owner(email, target_key, username):
+                        await websocket.send_text(manager.make_envelope(resp_type, {
+                            "ref_id": packet.get("msg_id"),
+                            "success": False,
+                            "msg": "无权限，只能修改已绑定到当前账号的角色密码"
+                        }))
+                        continue
+                    if len(new_password) < 6:
+                        await websocket.send_text(manager.make_envelope(resp_type, {
+                            "ref_id": packet.get("msg_id"), "success": False, "msg": "密码至少6位"
+                        }))
+                        continue
+                    if str(new_password).lower() in BLACKLIST:
+                        await websocket.send_text(manager.make_envelope(resp_type, {
+                            "ref_id": packet.get("msg_id"), "success": False, "msg": "密码过于简单，请更换密码"
+                        }))
+                        continue
+                # 5) TShock 管理操作
                 else:
                     needed = required_tshock_permission(req_type)
                     if needed:
-                        if not has_panel_permission(email, target_key, needed) and not _has_tshock_wildcard(email, target_key):
+                        allowed = has_panel_permission(email, target_key, needed) or _has_tshock_wildcard(email, target_key)
+                        if req_type == "get_groups" and not allowed:
+                            allowed = has_server_management_access(email, target_key, [
+                                "panel.console",
+                                "panel.users",
+                                "panel.groups",
+                                "panel.tshock.*",
+                            ])
+                        if not allowed:
                             await websocket.send_text(manager.make_envelope(resp_type, {
                                 "ref_id": packet.get("msg_id"),
                                 "success": False,

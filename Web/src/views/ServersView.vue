@@ -665,18 +665,39 @@ function switchToServer(s) {
 // ── 复制到剪贴板 ─────────────────────────────────
 const copied = ref('')
 let _copyTimer = null
-function copyText(text, key) {
-  navigator.clipboard.writeText(text).catch(() => {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
-    document.body.appendChild(ta); ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  })
-  copied.value = key
+async function copyText(text, key) {
+  const ok = await copyToClipboard(text)
+  copied.value = ok ? key : ''
   clearTimeout(_copyTimer)
   _copyTimer = setTimeout(() => { copied.value = '' }, 1500)
+}
+
+async function copyToClipboard(text) {
+  const value = String(text || '')
+  if (!value) return false
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return true
+    }
+  } catch {
+    // 继续尝试兼容方案
+  }
+
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = value
+    ta.setAttribute('readonly', '')
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
 }
 // ── 认领 ─────────────────────────────────────────────────────
 function openClaimModal() {

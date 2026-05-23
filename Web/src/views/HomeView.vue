@@ -3,10 +3,6 @@
     <section class="hero">
       <div>
         <h1>欢迎来到 TShock 平台主页</h1>
-        <p>
-          这里支持普通玩家和服主协作使用。
-          先根据你的目标选择入口，再进入具体功能页面。
-        </p>
       </div>
       <router-link to="/servers?tab=public" class="hero-action">进入服务器列表</router-link>
     </section>

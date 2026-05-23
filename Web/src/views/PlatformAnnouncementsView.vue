@@ -157,8 +157,20 @@
               <input v-model.number="form.target_account_id" type="number" class="pa-input" placeholder="输入目标账户 ID" />
             </div>
 
-            <input v-model.trim="form.title" class="pa-input" placeholder="公告标题" />
-            <textarea v-model.trim="form.content" class="pa-input" rows="5" placeholder="公告内容"></textarea>
+            <input
+              v-model.trim="form.title"
+              :class="['pa-input', { 'pa-input-error': formError && !form.title }]"
+              placeholder="公告标题"
+              @input="formError = ''"
+            />
+            <textarea
+              v-model.trim="form.content"
+              :class="['pa-input', { 'pa-input-error': formError && !form.content }]"
+              rows="5"
+              placeholder="公告内容"
+              @input="formError = ''"
+            ></textarea>
+            <div v-if="formError" class="pa-form-error">{{ formError }}</div>
             <div class="pa-inline-form">
               <label class="pa-checkline"><input v-model="form.is_important" type="checkbox" />标记为重要公告</label>
             </div>
@@ -199,6 +211,7 @@ const filters = reactive({ target_type: '', is_important: '', status: 'active' }
 const pagination = reactive({ page: 1, limit: 20, total: 0 })
 const showEditor = ref(false)
 const editingId = ref(null)
+const formError = ref('')
 const form = reactive({ target_type: 'all', server_id: null, target_account_id: null, title: '', content: '', is_important: false })
 
 const totalPages = computed(() => Math.max(1, Math.ceil((pagination.total || 0) / pagination.limit)))
@@ -279,12 +292,14 @@ function goPage(page) {
 
 function openCreate() {
   editingId.value = null
+  formError.value = ''
   Object.assign(form, { target_type: 'all', server_id: null, target_account_id: null, title: '', content: '', is_important: false })
   showEditor.value = true
 }
 
 function openEdit(item) {
   editingId.value = item.id
+  formError.value = ''
   form.target_type = item.target_type || 'all'
   form.server_id = item.server_id || null
   form.target_account_id = item.target_account_id || null
@@ -294,10 +309,16 @@ function openEdit(item) {
   showEditor.value = true
 }
 
-function closeEditor() { showEditor.value = false }
+function closeEditor() {
+  formError.value = ''
+  showEditor.value = false
+}
 
 async function submitForm() {
-  if (!form.title || !form.content) return
+  if (!form.title || !form.content) {
+    formError.value = '必填项不能为空'
+    return
+  }
   if (form.target_type === 'server' && !form.server_id) { showToast('请选择目标服务器', 'err'); return }
   if (form.target_type === 'account' && !form.target_account_id) { showToast('请输入目标账户ID', 'err'); return }
 

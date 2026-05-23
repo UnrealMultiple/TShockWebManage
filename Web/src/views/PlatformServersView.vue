@@ -309,6 +309,24 @@
                 </button>
                 <span v-if="!detailActionCount(serverDetail)" class="pa-meta">无可用操作</span>
               </div>
+              <div v-if="actionDraft.server_id && actionDraft.kind === 'reject'" class="pa-form-grid pa-action-draft">
+                <div class="pa-action-context">
+                  <strong>{{ actionLabel(actionDraft.kind) }}</strong>
+                  <span>目标服务器：{{ actionDraft.server_name }}</span>
+                </div>
+                <textarea
+                  v-model.trim="actionDraft.reason"
+                  :class="['pa-input', { 'pa-input-error': actionError && !actionDraft.reason }]"
+                  rows="4"
+                  :placeholder="actionPlaceholder(actionDraft.kind)"
+                  @input="actionError = ''"
+                ></textarea>
+                <div v-if="actionError" class="pa-form-error">{{ actionError }}</div>
+                <div class="pa-split-actions">
+                  <button class="pa-btn pa-btn-primary" @click="submitDraftAction">确认驳回</button>
+                  <button class="pa-btn pa-btn-outline" @click="resetDraftAction">取消</button>
+                </div>
+              </div>
             </section>
 
             <section class="pa-modal-card">
@@ -325,17 +343,19 @@
               <div class="pa-account-list-head">
                 <span class="pa-subsection-label">下架与删除</span>
               </div>
-              <div v-if="actionDraft.server_id" class="pa-form-grid">
+              <div v-if="actionDraft.server_id && actionDraft.kind !== 'reject'" class="pa-form-grid">
                 <div class="pa-action-context">
                   <strong>{{ actionLabel(actionDraft.kind) }}</strong>
                   <span>目标服务器：{{ actionDraft.server_name }}</span>
                 </div>
                 <textarea
                   v-model.trim="actionDraft.reason"
-                  class="pa-input"
+                  :class="['pa-input', { 'pa-input-error': actionError && !actionDraft.reason }]"
                   rows="4"
                   :placeholder="actionPlaceholder(actionDraft.kind)"
+                  @input="actionError = ''"
                 ></textarea>
+                <div v-if="actionError" class="pa-form-error">{{ actionError }}</div>
                 <div class="pa-split-actions">
                   <button class="pa-btn pa-btn-primary" @click="submitDraftAction">确认执行</button>
                   <button class="pa-btn pa-btn-outline" @click="resetDraftAction">取消</button>
@@ -354,11 +374,11 @@
       </div>
     </div>
     <!-- 服务器公告模态框 -->
-    <div v-if="showAnnounceModal" class="pa-modal-overlay" @click.self="showAnnounceModal = false">
+    <div v-if="showAnnounceModal" class="pa-modal-overlay" @click.self="closeServerAnnouncementModal">
       <div class="pa-modal">
         <div class="pa-modal-head">
           <h3>发送服务器公告</h3>
-          <button class="pa-toast-close" @click="showAnnounceModal = false">x</button>
+          <button class="pa-toast-close" @click="closeServerAnnouncementModal">x</button>
         </div>
         <div class="pa-modal-body">
           <div class="pa-form-grid">
@@ -366,15 +386,27 @@
               <strong>目标服务器：{{ serverDetail?.name }} (ID: {{ serverDetail?.id }})</strong>
               <span>仅该服务器拥有「接收服务器公告」权限的用户可见</span>
             </div>
-            <input v-model.trim="serverAnnounceForm.title" class="pa-input" placeholder="公告标题" />
-            <textarea v-model.trim="serverAnnounceForm.content" class="pa-input" rows="4" placeholder="公告内容"></textarea>
+            <input
+              v-model.trim="serverAnnounceForm.title"
+              :class="['pa-input', { 'pa-input-error': serverAnnounceError && !serverAnnounceForm.title }]"
+              placeholder="公告标题"
+              @input="serverAnnounceError = ''"
+            />
+            <textarea
+              v-model.trim="serverAnnounceForm.content"
+              :class="['pa-input', { 'pa-input-error': serverAnnounceError && !serverAnnounceForm.content }]"
+              rows="4"
+              placeholder="公告内容"
+              @input="serverAnnounceError = ''"
+            ></textarea>
+            <div v-if="serverAnnounceError" class="pa-form-error">{{ serverAnnounceError }}</div>
             <div class="pa-inline-form">
               <label class="pa-checkline"><input v-model="serverAnnounceForm.is_important" type="checkbox" />标记为重要公告</label>
             </div>
           </div>
         </div>
         <div class="pa-modal-foot">
-          <button class="pa-btn pa-btn-outline" @click="showAnnounceModal = false">取消</button>
+          <button class="pa-btn pa-btn-outline" @click="closeServerAnnouncementModal">取消</button>
           <button class="pa-btn pa-btn-primary" :disabled="submittingAnnounce" @click="sendServerAnnouncement">
             {{ submittingAnnounce ? '发送中…' : '发送公告' }}
           </button>
@@ -411,9 +443,11 @@ const toast = reactive({ message: '', type: 'ok' })
 const filters = reactive({ q: '', status: '', audit_status: '', is_public: '' })
 const pagination = reactive({ page: 1, limit: 20, total: 0 })
 const serverAnnounceForm = reactive({ title: '', content: '', is_important: false })
+const serverAnnounceError = ref('')
 const showAnnounceModal = ref(false)
 const submittingAnnounce = ref(false)
 const actionDraft = reactive({ kind: '', server_id: null, server_name: '', reason: '' })
+const actionError = ref('')
 const totalPages = computed(() => Math.max(1, Math.ceil((pagination.total || 0) / pagination.limit)))
 
 function showToast(message, type = 'ok') {
@@ -711,6 +745,7 @@ function prepareAction(kind, server) {
   actionDraft.server_id = server.id
   actionDraft.server_name = server.name
   actionDraft.reason = ''
+  actionError.value = ''
   if (!serverDetail.value || serverDetail.value.id !== server.id) showServerDetail(server.id, false)
 }
 
@@ -719,10 +754,15 @@ function resetDraftAction() {
   actionDraft.server_id = null
   actionDraft.server_name = ''
   actionDraft.reason = ''
+  actionError.value = ''
 }
 
 async function submitDraftAction() {
-  if (!actionDraft.server_id || !actionDraft.kind || !actionDraft.reason) return
+  if (!actionDraft.server_id || !actionDraft.kind) return
+  if (!actionDraft.reason) {
+    actionError.value = actionDraft.kind === 'reject' ? '请填写驳回原因' : '请填写操作原因'
+    return
+  }
   const currentId = actionDraft.server_id
   const currentKind = actionDraft.kind
   try {
@@ -746,12 +786,22 @@ async function submitDraftAction() {
 
 function openServerAnnouncementModal() {
   Object.assign(serverAnnounceForm, { title: '', content: '', is_important: false })
+  serverAnnounceError.value = ''
   showAnnounceModal.value = true
+}
+
+function closeServerAnnouncementModal() {
+  serverAnnounceError.value = ''
+  showAnnounceModal.value = false
 }
 
 async function sendServerAnnouncement() {
   const id = serverDetail.value?.id
-  if (!id || !serverAnnounceForm.title || !serverAnnounceForm.content) return
+  if (!serverAnnounceForm.title || !serverAnnounceForm.content) {
+    serverAnnounceError.value = '必填项不能为空'
+    return
+  }
+  if (!id) return
   submittingAnnounce.value = true
   try {
     const result = await createAnnouncement({
@@ -761,7 +811,7 @@ async function sendServerAnnouncement() {
       content: serverAnnounceForm.content,
       is_important: serverAnnounceForm.is_important,
     })
-    showAnnounceModal.value = false
+    closeServerAnnouncementModal()
     Object.assign(serverAnnounceForm, { title: '', content: '', is_important: false })
     const count = Number(result?.notification?.receiver_count || 0)
     showToast(count > 0 ? `服务器公告已发送，已通知 ${count} 个拥有面板权限的成员` : '服务器公告已保存，暂无可通知成员')

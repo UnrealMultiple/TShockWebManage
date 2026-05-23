@@ -822,10 +822,9 @@ onUnmounted(() => {
   width: 26px; height: 24px;
   padding: 2px 6px; background: none; color: #94a3b8;
   border: none; border-radius: 4px; font-size: 13px; cursor: pointer;
-  transition: all .12s; opacity: 0;
+  transition: all .12s;
 }
 .db-del-row-btn svg { width: 13px; height: 13px; }
-tr:hover .db-del-row-btn { opacity: 1; }
 .db-del-row-btn:hover { background: #fee2e2; color: #dc2626; }
 .db-empty-row { text-align: center; padding: 32px; color: #94a3b8; font-size: 13px; }
 .db-no-table {

@@ -7,7 +7,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, text
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
 from app.core.config import AUTH_DB_PATH
 from app.core.database import get_db
@@ -67,6 +67,10 @@ def _setting_value(db: Session, key: str) -> str:
 
 def _setting_bool(db: Session, key: str) -> bool:
     return _setting_value(db, key).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
 
 
 _platform_tables_ensured = False
@@ -397,11 +401,14 @@ async def audit_server(
     elif action == "reject":
         if server.platform_audit_status != "pending":
             raise HTTPException(status_code=400, detail="只有待审核服务器可以驳回")
+        previous_platform_status = server.platform_status
+        is_public_review = bool(server.is_public) and previous_platform_status == "active"
         server.platform_audit_status = "rejected"
         server.platform_audit_reason = reason or "未提供原因"
         server.platform_audit_by = current_user["id"]
         server.platform_audit_at = int(time.time())
-        server.platform_status = "inactive"
+        if not is_public_review:
+            server.platform_status = "inactive"
         server.platform_is_public = False
     else:
         raise HTTPException(status_code=400, detail="无效的审核动作")
@@ -827,7 +834,7 @@ async def list_account_restrictions(
         result.append({
             "id": r.id,
             "user_id": r.user_id,
-            "restriction_type": r.restriction_type.value,
+            "restriction_type": _enum_value(r.restriction_type),
             "value": r.value,
             "reason": r.reason,
             "created_by": r.created_by,
@@ -1041,7 +1048,7 @@ async def list_reports(
             "reported_server_id": r.reported_server_id,
             "reason": r.reason,
             "description": r.description,
-            "status": r.status.value,
+            "status": _enum_value(r.status),
             "created_at": r.created_at,
             "resolved_at": r.resolved_at,
             "resolved_by": r.resolved_by,
@@ -1120,7 +1127,7 @@ async def list_audit_logs(
             "id": log.id,
             "operator_id": log.operator_id,
             "operator_name": _pick_related_email(log.operator),
-            "operation_type": log.operation_type.value,
+            "operation_type": _enum_value(log.operation_type),
             "target_type": log.target_type,
             "target_id": log.target_id,
             "details": log.details,
@@ -1256,6 +1263,14 @@ def _notify_announcement_receivers(
     return {"receiver_count": len(receiver_ids)}
 
 
+def _validate_announcement_fields(title: str, content: str) -> Tuple[str, str]:
+    title = (title or "").strip()
+    content = (content or "").strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="必填项不能为空")
+    return title, content
+
+
 @router.get("/announcements", response_model=List[dict])
 async def list_announcements(
     target_type: Optional[str] = Query(None, description="目标类型: server/account/all"),
@@ -1321,6 +1336,7 @@ async def create_announcement(
     - target_type=account: 指定个体账户，仅该账户本人可见
     - target_type=all:     平台全体用户可见
     """
+    title, content = _validate_announcement_fields(title, content)
     if target_type not in ("server", "account", "all"):
         raise HTTPException(status_code=400, detail="target_type 必须为 server/account/all")
     if target_type == "server" and not server_id:
@@ -1394,6 +1410,7 @@ async def update_announcement(
     if not announcement:
         raise HTTPException(status_code=404, detail="公告不存在")
 
+    title, content = _validate_announcement_fields(title, content)
     announcement.title = title
     announcement.content = content
     announcement.is_important = is_important

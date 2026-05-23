@@ -991,39 +991,83 @@ function openPlayerPanel(p) {
 }
 
 function handlePapAction(evt) {
+  if (!activeServerKey.value) {
+    papRef.value?.showResult(false, '未选择服务器')
+    return
+  }
   const reqId = `pa-${Date.now()}`
   const reason = (evt?.reason || '').trim() || '由管理员操作'
   const duration = (evt?.duration || '').trim()
-  window.__tshockSend?.({ type: 'player_action', msg_id: reqId, timestamp: Date.now(),
+  const sent = window.__tshockSend?.({ type: 'player_action', msg_id: reqId, timestamp: Date.now(),
     payload: { agent_key: activeServerKey.value, ...evt, reason, duration } })
+  if (!sent) {
+    papRef.value?.showResult(false, 'WebSocket 未连接，无法发送操作')
+    return
+  }
+  let settled = false
   const handler = (e) => {
     const pkt = e.detail || {}
     if (pkt.type !== 'player_action_resp') return
     const p = pkt.payload || {}
     if (p.ref_id !== reqId) return
+    settled = true
     window.removeEventListener('ws-message', handler)
     papRef.value?.showResult(!!p.success, p.msg || (p.success ? '操作成功' : '操作失败'))
   }
   window.addEventListener('ws-message', handler)
-  setTimeout(() => window.removeEventListener('ws-message', handler), 15000)
+  setTimeout(() => {
+    window.removeEventListener('ws-message', handler)
+    if (!settled) papRef.value?.showResult(false, '操作超时，请确认 Agent 在线')
+  }, 15000)
+}
+
+function handleRequestGroups() {
+  if (!activeServerKey.value) {
+    papRef.value?.setAvailableGroups([])
+    papRef.value?.showResult(false, '未选择服务器')
+    return
+  }
+  const sent = window.__tshockSend?.({
+    type: 'get_groups',
+    msg_id: `gg-${Date.now()}`,
+    timestamp: Date.now(),
+    payload: { agent_key: activeServerKey.value },
+  })
+  if (!sent) {
+    papRef.value?.setAvailableGroups([])
+    papRef.value?.showResult(false, 'WebSocket 未连接，无法获取权限组')
+  }
 }
 
 function handlePapBanAll({ chars, reason, duration }) {
+  if (!activeServerKey.value) {
+    papRef.value?.showResult(false, '未选择服务器')
+    return
+  }
   const reqId = `pba-${Date.now()}`
   const banReason = (reason || '').trim() || '由管理员一键封禁'
   const banDuration = (duration || '').trim()
-  window.__tshockSend?.({ type: 'player_action', msg_id: reqId, timestamp: Date.now(),
+  const sent = window.__tshockSend?.({ type: 'player_action', msg_id: reqId, timestamp: Date.now(),
     payload: { agent_key: activeServerKey.value, action: 'ban_all', player: '', chars, reason: banReason, duration: banDuration } })
+  if (!sent) {
+    papRef.value?.showResult(false, 'WebSocket 未连接，无法发送操作')
+    return
+  }
+  let settled = false
   const handler = (e) => {
     const pkt = e.detail || {}
     if (pkt.type !== 'player_action_resp') return
     const p = pkt.payload || {}
     if (p.ref_id !== reqId) return
+    settled = true
     window.removeEventListener('ws-message', handler)
     papRef.value?.showResult(!!p.success, p.msg || '操作完成')
   }
   window.addEventListener('ws-message', handler)
-  setTimeout(() => window.removeEventListener('ws-message', handler), 15000)
+  setTimeout(() => {
+    window.removeEventListener('ws-message', handler)
+    if (!settled) papRef.value?.showResult(false, '操作超时，请确认 Agent 在线')
+  }, 15000)
 }
 
 async function handlePapAssignOwner({ player, user_id }) {
@@ -1196,8 +1240,11 @@ function onWsMessage(e) {
       papBanTicket.value = Number(p.ticket || 0)
     }
   } else if (pkt.type === 'get_groups_resp') {
+    const meta = pkt.metadata?.agent_key
+    if (meta && meta !== activeServerKey.value) return
     const p = pkt.payload || {}
-    if (p.success) papRef.value?.setAvailableGroups(p.groups || [])
+    papRef.value?.setAvailableGroups(p.groups || [])
+    if (!p.success) papRef.value?.showResult(false, p.msg || '获取权限组失败')
   }
 }
 

@@ -487,10 +487,10 @@ function hasCapability(name) {
 }
 
 const canBrowseDatabase = computed(() =>
-  hasPerm('panel.database') && hasCapability('database')
+  (hasPerm('panel.database') || hasPerm('panel.plugins') || hasPerm('panel.tshock.*')) && hasCapability('database')
 )
 const canWriteDatabase = computed(() =>
-  hasPerm('panel.database.write') && hasCapability('database_write')
+  (hasPerm('panel.database.write') || hasPerm('panel.plugins') || hasPerm('panel.tshock.*')) && hasCapability('database_write')
 )
 const canUseRawSql = computed(() =>
   hasPerm('panel.database.sql') && hasCapability('database_sql')

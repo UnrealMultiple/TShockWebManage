@@ -359,11 +359,40 @@ function blacklistSummary(req) {
 
 async function copyServerCode() {
   if (!serverCode.value) return
-  try {
-    await navigator.clipboard.writeText(serverCode.value)
+  const ok = await copyToClipboard(serverCode.value)
+  if (ok) {
     okMsg.value = '服务器编号已复制'
-  } catch {
+    errorMsg.value = ''
+  } else {
     errorMsg.value = '复制失败，请手动复制'
+  }
+}
+
+async function copyToClipboard(text) {
+  const value = String(text || '')
+  if (!value) return false
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return true
+    }
+  } catch {
+    // 继续尝试兼容方案
+  }
+
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = value
+    ta.setAttribute('readonly', '')
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
   }
 }
 

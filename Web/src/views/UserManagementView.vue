@@ -893,19 +893,29 @@ function openPlayerPanel(name, opts = {}) {
 }
 
 function handlePapAction(evt) {
+  if (!activeKey.value) {
+    papRef.value?.showResult(false, '未选择服务器')
+    return
+  }
   const reqId = Math.random().toString(36).slice(2)
   const reason = (evt?.reason || '').trim() || '由管理员操作'
   const duration = (evt?.duration || '').trim()
-  window.__tshockSend?.({
+  const sent = window.__tshockSend?.({
     type: 'player_action', msg_id: reqId, timestamp: Date.now(),
     payload: { agent_key: activeKey.value, ...evt, reason, duration },
   })
+  if (!sent) {
+    papRef.value?.showResult(false, 'WebSocket 未连接，无法发送操作')
+    return
+  }
   // 监听结果
+  let settled = false
   const handler = (e) => {
     const pkt = e.detail || {}
     if (pkt.type !== 'player_action_resp') return
     const p = pkt.payload || {}
     if (p.ref_id !== reqId) return
+    settled = true
     window.removeEventListener('ws-message', handler)
     papRef.value?.showResult(!!p.success, p.msg || (p.success ? '操作成功' : '操作失败'))
     if (p.success) {
@@ -915,28 +925,44 @@ function handlePapAction(evt) {
     }
   }
   window.addEventListener('ws-message', handler)
-  setTimeout(() => window.removeEventListener('ws-message', handler), 15000)
+  setTimeout(() => {
+    window.removeEventListener('ws-message', handler)
+    if (!settled) papRef.value?.showResult(false, '操作超时，请确认 Agent 在线')
+  }, 15000)
 }
 
 function handlePapBanAll({ chars, reason, duration }) {
+  if (!activeKey.value) {
+    papRef.value?.showResult(false, '未选择服务器')
+    return
+  }
   const reqId = Math.random().toString(36).slice(2)
   const banReason = (reason || '').trim() || '由管理员一键封禁'
   const banDuration = (duration || '').trim()
-  window.__tshockSend?.({
+  const sent = window.__tshockSend?.({
     type: 'player_action', msg_id: reqId, timestamp: Date.now(),
     payload: { agent_key: activeKey.value, action: 'ban_all', player: '', chars, reason: banReason, duration: banDuration },
   })
+  if (!sent) {
+    papRef.value?.showResult(false, 'WebSocket 未连接，无法发送操作')
+    return
+  }
+  let settled = false
   const handler = (e) => {
     const pkt = e.detail || {}
     if (pkt.type !== 'player_action_resp') return
     const p = pkt.payload || {}
     if (p.ref_id !== reqId) return
+    settled = true
     window.removeEventListener('ws-message', handler)
     papRef.value?.showResult(!!p.success, p.msg || '操作完成')
     if (p.success) loadMemberCharacters()
   }
   window.addEventListener('ws-message', handler)
-  setTimeout(() => window.removeEventListener('ws-message', handler), 15000)
+  setTimeout(() => {
+    window.removeEventListener('ws-message', handler)
+    if (!settled) papRef.value?.showResult(false, '操作超时，请确认 Agent 在线')
+  }, 15000)
 }
 
 async function handlePapAssignOwner({ player, user_id }) {
@@ -1036,8 +1062,17 @@ function refreshOnlinePlayers()  { onlineFetch.request(activeKey.value) }
 function refreshUnboundPlayers() { allGameFetch.request(activeKey.value) }
 
 function handleRequestGroups() {
-  window.__tshockSend?.({ type: 'get_groups', msg_id: `gg-${Date.now()}`, timestamp: Date.now(),
+  if (!activeKey.value) {
+    papRef.value?.setAvailableGroups([])
+    papRef.value?.showResult(false, '未选择服务器')
+    return
+  }
+  const sent = window.__tshockSend?.({ type: 'get_groups', msg_id: `gg-${Date.now()}`, timestamp: Date.now(),
     payload: { agent_key: activeKey.value } })
+  if (!sent) {
+    papRef.value?.setAvailableGroups([])
+    papRef.value?.showResult(false, 'WebSocket 未连接，无法获取权限组')
+  }
 }
 
 // ── 背包查看/编辑 ─────────────────────────────────────────────────
@@ -1186,8 +1221,11 @@ function onWsMessage(e) {
   }
 
   if (pkt.type === 'get_groups_resp') {
+    const meta = pkt.metadata?.agent_key
+    if (meta && meta !== activeKey.value) return
     const p = pkt.payload || {}
     papRef.value?.setAvailableGroups(p.groups || [])
+    if (!p.success) papRef.value?.showResult(false, p.msg || '获取权限组失败')
   }
 }
 

@@ -235,7 +235,7 @@
           </div>
 
           <div class="form-field">
-            <label class="form-label">允许的组 <span class="required">*</span></label>
+            <label class="form-label">允许的组</label>
             <div class="group-multiselect-wrap">
               <input
                 v-model="groupSearch"
@@ -311,7 +311,7 @@
         <div class="modal-body">
           <p class="edit-meta">{{ tabLabelByType(editTarget.type) }} #{{ editTarget.id }} · {{ editTarget.displayName }}</p>
           <div class="form-field">
-            <label class="form-label">允许的组 <span class="required">*</span></label>
+            <label class="form-label">允许的组</label>
             <div class="group-multiselect-wrap">
               <input
                 v-model="editGroupSearch"
@@ -347,7 +347,7 @@
         </div>
         <div class="modal-footer">
           <button class="btn btn-outline" @click="closeEditGroups">取消</button>
-          <button class="btn btn-primary" @click="submitUpdateGroups" :disabled="submitting || !editAllowedGroups.length">
+          <button class="btn btn-primary" @click="submitUpdateGroups" :disabled="submitting">
             {{ submitting ? '保存中…' : '保存修改' }}
           </button>
         </div>
@@ -517,7 +517,7 @@ const currentSelectedName = computed(() => {
 })
 
 const submitDisabled = computed(() => {
-  return submitting.value || !form.value.id || !form.value.allowedGroups.length
+  return submitting.value || !form.value.id
 })
 
 async function loadTerrariaData() {
